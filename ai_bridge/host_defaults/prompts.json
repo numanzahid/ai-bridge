@@ -1,0 +1,17 @@
+[
+  {
+    "name": "workspace-task",
+    "title": "Work on a workspace task",
+    "description": "Start a task on the connected machine using relevant workspace guidance.",
+    "arguments": [
+      {
+        "name": "task",
+        "description": "The task the user wants completed",
+        "required": true
+      }
+    ],
+    "messages": [
+      {"role": "user", "path": "prompts/workspace-task.md"}
+    ]
+  }
+]

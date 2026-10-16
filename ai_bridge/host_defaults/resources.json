@@ -1,0 +1,10 @@
+[
+  {
+    "uri": "ai-bridge://guides/host-configuration",
+    "name": "host-configuration-guide",
+    "title": "AI Bridge host configuration",
+    "description": "Where host-side MCP instructions, tool descriptions, resources, and prompts are configured.",
+    "mime_type": "text/markdown",
+    "path": "resources/bridge-guide.md"
+  }
+]
