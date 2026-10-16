@@ -65,6 +65,7 @@ UNITPY
 fi
 [ "$#" -eq 0 ] || die "Usage: bash install.sh [--stage | --activate RELEASE | --rollback [RELEASE]]"
 if [ -d "$DATA_DIR/app" ] || [ -L "$DATA_DIR/current" ]; then
+  say "Existing installation: staging only. Its active listener is left running." >&2
   RELEASE="$(python3 "$SRC_DIR/deploy.py" stage --root "$DATA_DIR" --source "$SRC_DIR")"
   echo "Staged and tested: $RELEASE"
   echo "Activation is separate: bash install.sh --activate '$RELEASE'"
@@ -76,6 +77,9 @@ command -v sudo >/dev/null || die "sudo is required."
 command -v systemctl >/dev/null || die "systemd is required."
 command -v python3 >/dev/null || die "python3 is required (3.10+)."
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' || die "Python 3.10+ required."
+
+# Warn before expensive preparation; a busy port does not prevent installation.
+PORT_STATE="$(python3 "$SRC_DIR/deploy.py" check-port --port "$PORT" --warn-only)"
 
 say "Checking sudo access"
 sudo -v
@@ -239,11 +243,25 @@ WantedBy=multi-user.target
 EOF
 sudo install -o root -g root -m 644 "$TMP_UNIT" "$UNIT_FILE"
 rm -f "$TMP_UNIT"
+# Use the effective port from the saved configuration for the final startup decision.
+PORT_STATE="$(python3 "$SRC_DIR/deploy.py" check-port --port "$PORT" --warn-only)"
 sudo systemctl daemon-reload
 sudo systemctl enable ai-bridge >/dev/null
 # Never restart synchronously from an MCP call served by this unit.
-sudo systemd-run --collect --on-active=3s --unit="ai-bridge-install-$(date +%s)" /usr/bin/systemctl restart ai-bridge
-say "Service startup scheduled. Verify local health and authenticated MCP after startup."
+if [ "$PORT_STATE" = available ]; then
+  sudo systemd-run --collect --on-active=3s --unit="ai-bridge-install-$(date +%s)" /usr/bin/systemctl restart ai-bridge
+  say "Installation complete. Service startup scheduled; verify health after startup."
+else
+  say "Installation complete. Startup pending: 127.0.0.1:$PORT is unavailable." >&2
+  cat >&2 <<PORT_HELP
+To start the bridge:
+  1. Edit $ENV_FILE (for example: sudoedit $ENV_FILE).
+  2. Set AI_BRIDGE_PORT to an unused port, or free port $PORT.
+  3. Run: sudo systemctl restart ai-bridge
+  4. Update the tunnel backend if you changed the port, then verify /healthz.
+Startup was not scheduled, to avoid repeatedly failing on the occupied port.
+PORT_HELP
+fi
 
 cat <<EOF
 

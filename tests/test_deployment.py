@@ -83,3 +83,69 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(result.stdout.strip(),'staged-fixture')
         self.assertFalse((Path(self.tmp.name)/'.local/share/ai-bridge/current').exists())
+
+    def test_busy_port_warning_allows_installation_to_continue(self):
+        import socket,subprocess,sys
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1',0));listener.listen()
+            port=listener.getsockname()[1]
+            result=subprocess.run([sys.executable,str(self.source/'deploy.py'),'check-port','--port',str(port),'--warn-only'],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stdout.strip(),'unavailable')
+        self.assertIn(f'127.0.0.1:{port}',result.stderr)
+        self.assertIn('Installation will continue',result.stderr)
+        self.assertIn('/etc/ai-bridge/ai-bridge.env',result.stderr)
+        self.assertIn('sudo systemctl restart ai-bridge',result.stderr)
+        self.assertIn('tunnel backend',result.stderr)
+
+    def test_busy_port_finishes_setup_without_scheduling_restart_loop(self):
+        import os,subprocess
+        source=(self.source/'install.sh').read_text()
+        startup=source.split('sudo systemctl enable ai-bridge >/dev/null\n',1)[1].split('\ncat <<EOF',1)[0]
+        harness='set -e; say() { printf "%s\\n" "$*"; }; sudo() { echo "INVOKED $*"; }; '+startup
+        for state in ('unavailable','available'):
+            with self.subTest(state=state):
+                result=subprocess.run(['bash','-c',harness],env=dict(os.environ,PORT_STATE=state,PORT='8765',ENV_FILE='/fixture/ai-bridge.env'),capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                if state=='unavailable':
+                    self.assertNotIn('INVOKED',result.stdout)
+                    self.assertIn('Installation complete. Startup pending',result.stderr)
+                    self.assertIn('AI_BRIDGE_PORT',result.stderr)
+                    self.assertIn('sudo systemctl restart ai-bridge',result.stderr)
+                    self.assertIn('tunnel backend',result.stderr)
+                else:
+                    self.assertIn('INVOKED systemd-run',result.stdout)
+                    self.assertIn('Installation complete.',result.stdout)
+
+    def test_port_check_accepts_free_port_and_rejects_invalid_port(self):
+        import socket
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1',0));port=listener.getsockname()[1]
+        deploy.check_port(port=port)
+        with self.assertRaisesRegex(ValueError,'between 1 and 65535'):
+            deploy.check_port(port=0)
+
+    def test_test_failure_is_streamed_logged_and_not_marked_ready(self):
+        from contextlib import redirect_stderr
+        import io,sys
+        release=self.root/'release';release.mkdir(parents=True)
+        output=io.StringIO()
+        with redirect_stderr(output),self.assertRaisesRegex(RuntimeError,'Regression tests FAILED.*Full log'):
+            deploy.run_logged([sys.executable,'-u','-c','print("test_example ... FAIL"); print("FAILED (failures=1)"); raise SystemExit(1)'],
+                              release/'tests.log',live=True,step='Regression tests')
+        self.assertIn('test_example ... FAIL',output.getvalue())
+        self.assertIn('FAILED (failures=1)',output.getvalue())
+        self.assertIn('test_example ... FAIL',(release/'tests.log').read_text())
+        self.assertFalse((release/'READY').exists())
+
+    def test_staging_progress_uses_stderr_not_release_path_stdout(self):
+        from contextlib import redirect_stderr,redirect_stdout
+        import io
+        stdout,stderr=io.StringIO(),io.StringIO()
+        with redirect_stderr(stderr),redirect_stdout(stdout):
+            release=deploy.stage(self.root,self.source,builder=self.builder,tester=self.validate_fixture)
+        self.assertEqual(stdout.getvalue(),'')
+        self.assertIn('Copying source',stderr.getvalue())
+        self.assertIn('checksums',stderr.getvalue())
+        self.assertIn('Staging PASSED',stderr.getvalue())
+        self.assertTrue((release/'READY').exists())
