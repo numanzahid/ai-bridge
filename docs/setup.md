@@ -160,6 +160,5 @@ need GNU `ln -T`. Remote sudo must already work noninteractively with `sudo -n`;
 the bridge never stores or forwards remote passwords. Keep existing local sudo
 credentials separate. See [SSH tools](reference.md#ssh-administration) for limits.
 
-After verified activation, run `bash install.sh --install-cli` as the service
-user to register `~/.local/bin/ai-bridge` (ensure it is on PATH). It changes no
-service/release selection. Use matching state/task paths for token-free commands; see [agent management](agent-management.md). Normal server startup is unchanged.
+Host tooling is moving to [ai-bridge-cli](https://github.com/numanzahid/ai-bridge-cli).
+The server installs and starts independently of that project.

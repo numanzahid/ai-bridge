@@ -9,10 +9,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-import cli_install
-from ai_bridge import cli
+from ai_bridge.management import Sessions
 from ai_bridge.core import Config, Jobs
-from ai_bridge.permissions import native_session_storage_safe, private_primary_group
+from ai_bridge.permissions import native_session_storage_safe
 
 SID = '11111111-2222-4333-8444-555555555555'
 
@@ -63,8 +62,7 @@ class NativeStoragePermissionsTests(unittest.TestCase):
             yield
 
     def dry_run(self):
-        args = cli.parser().parse_args(['sessions', 'open', 'codex:' + SID, '--dry-run'])
-        return cli.dispatch(args, self.cfg, self.jobs)
+        return Sessions(self.cfg, self.jobs).interactive('codex', SID)
 
     @contextmanager
     def native_preflight(self):
@@ -76,7 +74,7 @@ class NativeStoragePermissionsTests(unittest.TestCase):
              patch('os.execvpe') as execute:
             yield probe, execute
 
-    def test_private_primary_0664_cli_dry_run_preserves_native_record(self):
+    def test_private_primary_0664_preflight_preserves_native_record(self):
         before = (self.storage.read_bytes(), self.storage.stat().st_mtime_ns)
         with self.permissions(), self.native_preflight() as (probe, execute):
             result = self.dry_run()
@@ -152,7 +150,3 @@ class NativeStoragePermissionsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'conversion unsupported'):
                 self.dry_run()
             execute.assert_not_called()
-
-    def test_package_helper_matches_tested_installer_group_policy(self):
-        self.assertEqual(private_primary_group.__code__.co_code,
-                         cli_install.private_primary_group.__code__.co_code)

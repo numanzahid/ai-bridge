@@ -1,4 +1,4 @@
-"""Shared terminal/MCP task, session overlay and managed-agent operations."""
+"""Shared task, session overlay and managed-agent operations."""
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -39,16 +39,16 @@ def private_dir(path, create=True):
     return path
 
 
-def read_json(path):
+def read_json(path, max_bytes=65536):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd) as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError('Unsafe management metadata permissions or ownership.')
-        if info.st_size > 65536:
+        if info.st_size > max_bytes:
             raise ValueError('Management metadata exceeds size limit.')
-        data = stream.read(65537)
-        if len(data) > 65536:
+        data = stream.read(max_bytes + 1)
+        if len(data) > max_bytes:
             raise ValueError('Management metadata exceeds size limit.')
         return json.loads(data)
 
@@ -68,7 +68,8 @@ def write_json(path, value):
 
 @contextmanager
 def management_lock(cfg):
-    directory = private_dir(cfg.state_dir / 'management')
+    from .provenance import prepare_management
+    directory = prepare_management(cfg)
     fd = os.open(directory / '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         info = os.fstat(fd)
@@ -204,7 +205,7 @@ def observed_task_processes(workspace):
 
 
 def start_agent(cfg, jobs, agent, prompt, cwd=None, session_id=None, permission=None,
-                model=None, task_id=None, timeout=None):
+                model=None, task_id=None, timeout=None, *, invocation_origin=None):
     if agent not in ag.AGENTS or (permission or cfg.agent_default_permission) not in ag.PERMISSIONS:
         raise ValueError('Unknown agent or permission.')
     if timeout is not None and (type(timeout) is not int or not 1 <= timeout <= 604800):
@@ -240,6 +241,7 @@ def start_agent(cfg, jobs, agent, prompt, cwd=None, session_id=None, permission=
         return jobs.start(argv, workdir, kind='agent',
                           display=f'{agent}: resume {session_id}' if session_id else f'{agent}: new turn',
                           extra={'agent': agent, 'session_id': session_id, 'requested_session_id': session_id,
+                                 'invocation_origin': invocation_origin,
                                  'permission': perm, 'model': model, 'task_id': task['task_id'] if task else None,
                                  'workspace_type': 'task' if task else 'project', 'timeout': timeout,
                                  'workspace_peers': peers,
@@ -317,6 +319,8 @@ class Sessions:
     def overlay_path(self, agent, sid):
         if agent not in ag.AGENTS or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', sid):
             raise ValueError('Use an exact agent and UUID.')
+        from .provenance import prepare_management
+        prepare_management(self.cfg)
         root = private_dir(self.cfg.state_dir / 'management' / 'sessions')
         return root / (hashlib.sha256(f'{agent}:{sid}'.encode()).hexdigest() + '.json')
 
@@ -334,6 +338,9 @@ class Sessions:
             return dict(info, bridge_metadata=value)
 
     def enrich(self, agent, rows, include_archived=False):
+        from .provenance import Provenance, valid_session, prepare_management
+        prepare_management(self.cfg)
+        provenance = Provenance(self.cfg)
         jobs = self.jobs.list(limit=None, kind='agent')
         indexed = {}
         for job in jobs:
@@ -347,10 +354,15 @@ class Sessions:
         out = []
         for original in rows:
             row = dict(original)
+            row['bridge_origin'] = None
             sid = row.get('session_id', '')
-            if not re.fullmatch(r'[0-9a-fA-F-]{36}', sid):
+            if not valid_session(agent, sid):
                 out.append(row)
                 continue
+            try:
+                row['bridge_origin'] = 'mcp' if provenance.read(agent, sid) else None
+            except (OSError, ValueError) as error:
+                row['bridge_provenance_error'] = str(error)[:300]
             path = self.overlay_path(agent, sid)
             overlay = read_json(path) if path.exists() or path.is_symlink() else {}
             row['archived'] = overlay.get('archived', False)

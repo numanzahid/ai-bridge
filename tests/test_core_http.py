@@ -49,6 +49,8 @@ class CoreHTTPTests(unittest.TestCase):
                 fake.write_text('#!/bin/sh\nprintf "%s\\n" "ActionRequiredError: Increase limits for faster responses You\'re out of usage. Switch to Auto, or ask your admin to increase your limit to continue." >&2\nexit 1\n')
             elif scenario == 'service_unavailable':
                 fake.write_text('#!/bin/sh\nprintf "%s\\n" "Service unavailable (503)" >&2\nexit 1\n')
+            if scenario == 'mcp_session':
+                fake.write_text('#!' + sys.executable + '\nimport json,time\nprint(json.dumps({"type":"thread.started","thread_id":"' + SID + '"}), flush=True)\ntime.sleep(1)\n')
             fake.chmod(0o755)
             (root/'sudo-test.pass').write_text(PASSWORD)
             (root/'config/instructions').mkdir(parents=True)
@@ -165,6 +167,23 @@ class CoreHTTPTests(unittest.TestCase):
                                'task_id': job['task_id'], 'wait_seconds': 1})
             self.assertEqual(second['cwd'], job['cwd'])
             self.assertIn('error', self.tool(base, 'agent_send', {'agent': 'cursor', 'prompt': 'fixture', 'task_id': ''}))
+
+    def test_mcp_boundary_persists_session_evidence(self):
+        import hashlib
+        with self.running('mcp_session') as (root, base):
+            result = self.tool(base, 'agent_send', {'agent': 'codex', 'prompt': 'fixture', 'wait_seconds': 0})
+            jid = result['job_id']
+            meta = json.loads((root / 'state/jobs' / (jid + '.json')).read_text())
+            self.assertEqual(meta['invocation_origin'], 'mcp')
+            path = root / 'state/management/provenance' / (hashlib.sha256(f'codex:{SID}'.encode()).hexdigest() + '.json')
+            deadline = time.monotonic() + 5
+            while not path.exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertIn(jid, json.loads(path.read_text())['job_ids'])
+            row = self.tool(base, 'agent_sessions', {'agent': 'codex'})['sessions'][0]
+            self.assertEqual(row['bridge_origin'], 'mcp')
+            self.assertIsNone(row['native_source'])
+            self.tool(base, 'agent_wait', {'job_id': jid, 'wait_seconds': 2})
 
     def test_core_http_without_any_coding_clis(self):
         with self.running('missing') as (root, base):

@@ -8,11 +8,10 @@ The bridge is a small Python MCP server connecting your client to shell commands
 files, background jobs, and optional coding agents. Ask what is using disk space,
 start a build and check it later, read a configuration file, or resume a project
 chat with its existing context. New agent work without a project uses a private
-`~/.ai-bridge-tasks/` workspace. A [host CLI](docs/agent-management.md) manages tasks,
-saved sessions and agent jobs without an MCP token. Lists use compact tables in a
-terminal and retain JSON in pipes; use `--json` or `--table` to choose explicitly.
-Register `ai-bridge` with `bash install.sh --install-cli` as the service user after
-release activation.
+`~/.ai-bridge-tasks/` workspace. The host CLI is moving to the standalone
+[ai-bridge-cli repository](https://github.com/numanzahid/ai-bridge-cli).
+This repository contains the server; see the [session provenance contract](docs/agent-management.md)
+for integration with host tooling.
 
 No local model or bridge-specific AI API key is needed. The connected client
 supplies the AI. Native coding CLIs are optional and keep their own installation,

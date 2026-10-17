@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from ai_bridge.core import Config, Jobs
-from ai_bridge import agents, cli
+from ai_bridge import agents
 from ai_bridge.management import Sessions, Tasks, runtime, start_agent, stop_agent
 from ai_bridge.execution import Descendants, process_identity
 
@@ -58,6 +58,7 @@ class ManagementTests(unittest.TestCase):
     def test_explicit_project_not_inferred_or_moved(self):
         row = self.turn(cwd=str(self.root))
         self.assertEqual(row['workspace_type'], 'project')
+        self.assertIsNone(row['invocation_origin'])
         self.assertIsNone(row['task_id'])
         self.assertFalse(self.tasks.root.exists())
 
@@ -172,22 +173,20 @@ class ManagementTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '--yes'):
                 self.tasks.cleanup(task['task_id'], self.jobs, False, allow_uninspectable=True)
 
-    def test_cli_uninspectable_override_requires_confirmation_and_preserves_native_history(self):
+    def test_uninspectable_override_requires_confirmation_and_preserves_native_history(self):
         task = self.tasks.create()
         native = self.root / '.codex' / 'saved.jsonl'
         native.parent.mkdir()
         native.write_text('native history fixture')
         original = native.read_bytes()
-        prefix = ['tasks', 'cleanup', task['task_id']]
         with patch('ai_bridge.management.observed_task_processes', return_value=self.cleanup_observations()), \
              patch('os.kill') as kill:
-            args = cli.parser().parse_args(prefix + ['--allow-uninspectable'])
             with self.assertRaisesRegex(ValueError, '--yes'):
-                cli.dispatch(args, self.cfg, self.jobs)
-            preview = cli.dispatch(cli.parser().parse_args(prefix + ['--dry-run', '--allow-uninspectable']), self.cfg, self.jobs)
+                self.tasks.cleanup(task['task_id'], self.jobs, False, allow_uninspectable=True)
+            preview = self.tasks.cleanup(task['task_id'], self.jobs, allow_uninspectable=True)
             self.assertTrue(preview['cleanup_allowed'])
             self.assertTrue(Path(task['workspace']).exists())
-            result = cli.dispatch(cli.parser().parse_args(prefix + ['--yes', '--allow-uninspectable']), self.cfg, self.jobs)
+            result = self.tasks.cleanup(task['task_id'], self.jobs, False, allow_uninspectable=True, confirmed=True)
             self.assertEqual(result['ignored_uninspectable_pids'], [101, 202])
             self.assertIn('HIGH RISK', result['risk'])
             self.assertTrue(result['removed'])
@@ -285,11 +284,6 @@ class ManagementTests(unittest.TestCase):
             self.turn(timeout=0)
         with self.assertRaises(ValueError):
             self.turn(timeout=604801)
-        with self.assertRaises(ValueError):
-            cli.target(SID, None)
-        self.assertEqual(cli.target('codex:' + SID, None), ('codex', SID))
-        with self.assertRaises(ValueError):
-            cli.target('codex:' + SID, 'claude')
 
     def test_native_open_preflight_does_not_rewrite(self):
         sessions = Sessions(self.cfg, self.jobs)
@@ -309,13 +303,6 @@ class ManagementTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'unsupported'):
                 sessions.interactive('codex', SID)
         self.assertEqual(self.store.read_text(), '{}')
-
-    def test_non_tty_open_refused_before_preflight(self):
-        args = cli.parser().parse_args(['sessions', 'open', 'codex:' + SID])
-        with patch('sys.stdin.isatty', return_value=False), patch.object(Sessions, 'interactive') as opening:
-            with self.assertRaisesRegex(ValueError, 'terminal'):
-                cli.dispatch(args, self.cfg, self.jobs)
-            opening.assert_not_called()
 
     def test_managed_runtime_identity_and_command_refusal(self):
         meta = {'id': 'test-job', 'kind': 'agent', 'status': 'running', 'pid': os.getpid(),
@@ -375,46 +362,6 @@ class ManagementTests(unittest.TestCase):
             result = lineage.cancel()
             self.assertIn(os.getpid(), result['unsignalled_pids'])
             send.assert_not_called()
-
-    def test_cli_tokenless_end_to_end_fake_agent_and_overlay(self):
-        codex = self.root / 'codex' / 'sessions'
-        codex.mkdir(parents=True)
-        native = codex / ('rollout-test-' + SID + '.jsonl')
-        native.write_text(json.dumps({'type': 'session_meta', 'payload': {
-            'id': SID, 'cwd': str(self.root), 'source': 'exec', 'thread_source': 'user'}}))
-        fake = self.fake('import json,sys\nif "--help" in sys.argv:\n print("SESSION_ID --include-non-interactive"); sys.exit()\nprint(json.dumps({"type":"thread.started","thread_id":"' + SID + '"}))\n')
-        env = dict(os.environ, AI_BRIDGE_STATE_DIR=str(self.cfg.state_dir),
-                   AI_BRIDGE_TASKS_DIR=str(self.cfg.tasks_dir), CODEX_HOME=str(codex.parent),
-                   AI_BRIDGE_CODEX_BIN=fake)
-        env.pop('AI_BRIDGE_TOKEN', None)
-        def run(*args, ok=True):
-            r = subprocess.run([sys.executable, '-m', 'ai_bridge', *args], env=env,
-                               capture_output=True, text=True, timeout=15)
-            self.assertEqual(r.returncode, 0 if ok else 1, r.stderr)
-            return json.loads(r.stdout if ok else r.stderr)
-        task = run('tasks', 'create')
-        self.assertEqual(run('tasks', 'list')[0]['task_id'], task['task_id'])
-        run('tasks', 'cleanup', task['task_id'], ok=False)
-        self.assertTrue(run('tasks', 'cleanup', task['task_id'], '--dry-run')['dry_run'])
-        preview = run('tasks', 'cleanup', task['task_id'], '--dry-run')
-        run('tasks', 'cleanup', task['task_id'], '--yes', ok=preview['cleanup_allowed'])
-        plan = run('sessions', 'open', 'codex:' + SID, '--dry-run')
-        self.assertIn('--include-non-interactive', plan['argv'])
-        run('sessions', 'rename', 'codex:' + SID, 'A display title')
-        self.assertEqual(run('sessions', 'list', '--agent', 'codex', '--mode', 'noninteractive')['total'], 1)
-        run('sessions', 'archive', 'codex:' + SID)
-        self.assertEqual(run('sessions', 'list', '--agent', 'codex')['total'], 0)
-        self.assertEqual(run('sessions', 'list', '--agent', 'codex', '--all')['total'], 1)
-        run('sessions', 'unarchive', 'codex:' + SID)
-        started = run('sessions', 'start', '--agent', 'codex', 'test')
-        finished = self.jobs.wait(started['id'], 5)
-        self.assertEqual(finished['status'], 'done')
-        self.assertTrue(started['task_id'])
-        self.assertEqual(run('agents', 'inspect', started['id'])['status'], 'done')
-        continued = run('sessions', 'continue', 'codex:' + SID, 'continue')
-        self.assertEqual(continued['cwd'], str(self.root))
-        self.jobs.wait(continued['id'], 5)
-        self.assertEqual(json.loads(native.read_text())['payload']['source'], 'exec')
 
     def test_busy_check_observes_unpolled_session_beyond_200(self):
         job = {'id': 'unpolled-job', 'agent': 'codex', 'status': 'running', 'session_id': None}
@@ -516,15 +463,6 @@ class ManagementTests(unittest.TestCase):
         self.assertTrue(result['timed_out'])
         self.assertFalse(result['cleanup']['complete'])
         self.assertIn('no group signalling', result['cleanup']['scope'])
-
-    def test_unknown_cli_command_never_starts_server(self):
-        env = dict(os.environ)
-        env.pop('AI_BRIDGE_TOKEN', None)
-        result = subprocess.run([sys.executable, '-m', 'ai_bridge', 'not-a-command'], env=env,
-                                capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn('invalid choice', result.stderr)
-        self.assertNotIn('AI_BRIDGE_TOKEN', result.stderr)
 
     def test_native_resume_other_adapters_and_storage_safety(self):
         sessions = Sessions(self.cfg, self.jobs)

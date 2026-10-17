@@ -157,7 +157,7 @@ host shell/file/job tools. CLI output/storage formats can change independently.
 | `agent_sessions(agent, cwd=null, limit=15, offset=0)` | Saved local chats, newest first; optional project filter, page limit up to 100. |
 | `agent_runtime(job_id=null)` | Managed agent jobs or one exact job; verifies runner/target identities and reports observed lineage and runner resources. Unrelated native services are not managed. |
 | `agent_stop(job_id)` | Cancel an exact managed agent job; returns cleanup scope and any uncertainty. No session/name-based kill. |
-| `tasks_list(limit=30, offset=0)` | Discover private task IDs/workspaces for reuse; page limit up to 100. Cleanup is host CLI only. |
+| `tasks_list(limit=30, offset=0)` | Discover private task IDs/workspaces for reuse; page limit up to 100. Cleanup is a local management operation. |
 | `agent_history(agent, session_id, last_n=30, include_tools=true, max_chars_per_message=2000, offset=0)` | Read stored conversation without a model turn. Up to 300 entries and 10000 chars/message; overall response budget may reduce the page. |
 
 Without `cwd`, `session_id` or `task_id`, agent_send creates a unique private task
@@ -169,10 +169,10 @@ Tasks are workspaces, not sandboxes. New replies include task/workspace linkage.
 Listings add `mode`, `session_type`, `native_source`, ownership, bridge-job status,
 task linkage and optional bridge display aliases. Unknown provenance stays unknown;
 `idle` means no matching bridge job, not proof no native process is using the chat.
-Archived overlays hide records from default lists. See [host CLI](agent-management.md)
-for `ai-bridge sessions ...`, filters, reversible archive, safe cleanup and native
-interactive resume. Register the command explicitly with `bash install.sh --install-cli`
-as the service user after activation; no token is required.
+Archived overlays hide records from default lists. `bridge_origin` is `mcp` only
+when durable evidence of MCP session creation exists, otherwise null; native origin metadata is
+preserved. See the [provenance contract](agent-management.md). Host tooling is
+moving to [ai-bridge-cli](https://github.com/numanzahid/ai-bridge-cli).
 
 ### Continue an existing chat
 

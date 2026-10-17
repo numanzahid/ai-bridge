@@ -28,11 +28,14 @@ def private_json(path: Path, value):
 
 
 class Recorder:
-    def __init__(self, root: Path, job_id: str, limit: int, agent=None):
+    def __init__(self, root: Path, job_id: str, limit: int, agent=None, provenance=None):
         self.root, self.id = root, job_id
         sidecar_path(root, job_id, 'output', create=True)
         self.capture = Capture(limit)
         self.agent = agent
+        self.provenance = provenance
+        self.provenance_error = None
+        self.provenance_session_id = None
         self.pending = {"stdout": bytearray(), "stderr": bytearray()}
         self.dropping = {"stdout": False, "stderr": False}
         self.record_limit = max(262144, min(limit, 1048576))
@@ -59,7 +62,21 @@ class Recorder:
                         value = json.dumps(value,ensure_ascii=False)
                     if len(value)>65536:
                         self.records_dropped += 1
-                    self.parsed[key] = value[-65536:]
+                    if key != 'session_id' or self.provenance_session_id is None:
+                        self.parsed[key] = value[-65536:]
+            from .provenance import observed_session
+            observed = observed_session(self.agent, line)
+            if observed and self.provenance_session_id is None:
+                self.provenance_session_id = observed
+                self.parsed['session_id'] = observed
+            if self.provenance and observed == self.provenance_session_id and observed:
+                from .provenance import Provenance
+                try:
+                    if Provenance(self.provenance[0]).observe(
+                            self.provenance[1], {'session_id': observed}) is True:
+                        self.provenance_error = None
+                except (OSError, ValueError) as error:
+                    self.provenance_error = str(error)[:300]
             self.parsed['is_error'] |= parsed['is_error']
             for key, count in (('progress', 100), ('other', 40)):
                 self.parsed[key] = (self.parsed[key]+[str(v)[-4000:] for v in parsed[key]])[-count:]
@@ -113,7 +130,8 @@ class Recorder:
             'truncated': self.capture.total > len(self.capture.value()),
             'records_dropped': self.records_dropped,
             'generation': self.version, 'parsed': self.parsed if self.agent else None,
-            'parser_error': self.parser_error})
+            'parser_error': self.parser_error, 'provenance_error': self.provenance_error,
+            'provenance_session_id': self.provenance_session_id})
         self.last_flush = time.monotonic()
 
 
@@ -124,7 +142,8 @@ def main():
     root, job_id = Path(payload['root']), payload['id']
     cfg = Config(token='', sudo_password=payload.pop('password', None),
                  capture_bytes=8192, state_dir=root.parent)
-    recorder = Recorder(root, job_id, payload['log_bytes'], payload.get('agent'))
+    recorder = Recorder(root, job_id, payload['log_bytes'], payload.get('agent'),
+                        (cfg, payload.get('provenance_job') or {}))
     cancelled = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: cancelled.set())
     signal.signal(signal.SIGINT, lambda *_: cancelled.set())

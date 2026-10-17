@@ -13,11 +13,6 @@ if [ "${1:-}" = --uninstall ]; then
   shift
   exec bash "$SRC_DIR/uninstall.sh" "$@"
 fi
-# Explicit CLI registration never stages, bootstraps, elevates or restarts.
-if [ "${1:-}" = --install-cli ]; then
-  shift
-  exec python3 -I "$SRC_DIR/cli_install.py" "$@"
-fi
 DATA_DIR="$APP_HOME/.local/share/ai-bridge"
 ETC_DIR="/etc/ai-bridge"
 ENV_FILE="$ETC_DIR/ai-bridge.env"
@@ -82,7 +77,7 @@ MODE="${1:-}"
 case "$MODE" in
   ""|--run-as-root) [ "$#" -le 1 ] || die "Unexpected arguments." ;;
   --dedicated-user) [ "$#" -le 2 ] || die "Use --dedicated-user [NAME]." ;;
-  *) die "Usage: bash install.sh [--install-cli | --uninstall [OPTIONS] | --dedicated-user [NAME] | --run-as-root | --stage | --activate RELEASE | --rollback [RELEASE]]" ;;
+  *) die "Usage: bash install.sh [--uninstall [OPTIONS] | --dedicated-user [NAME] | --run-as-root | --stage | --activate RELEASE | --rollback [RELEASE]]" ;;
 esac
 if [ "$(id -u)" -ne 0 ] && [ -n "$MODE" ]; then
   die "Root mode flags require root. Run without flags for the existing non-root workflow."

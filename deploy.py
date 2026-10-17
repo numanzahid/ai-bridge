@@ -115,13 +115,11 @@ def stage(root, source, python=sys.executable, builder=build_environment, tester
         # Build at its FINAL path; venv scripts contain absolute paths.
         # Incomplete releases are retained for diagnosis and never selectable.
         shutil.copytree(source/'ai_bridge',release/'app/ai_bridge',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-        for name in ('ai-bridge', 'cli_install.py'):
-            shutil.copy2(source/name, release/'app'/name)
         validation=release/'validation'
         validation.mkdir()
         shutil.copytree(source/'tests',validation/'tests',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         (validation/'ai_bridge').symlink_to(release/'app/ai_bridge', target_is_directory=True)
-        for name in ('ai-bridge', 'cli_install.py', 'install.sh', 'bootstrap.py', 'uninstall.sh', 'uninstall.py', 'merge_env.py','requirements.txt','requirements.lock','deploy.py'):
+        for name in ('install.sh', 'bootstrap.py', 'uninstall.sh', 'uninstall.py', 'merge_env.py','requirements.txt','requirements.lock','deploy.py'):
             shutil.copy2(source/name,validation/name)
         builder(release,source,python)
         tester(release,source)

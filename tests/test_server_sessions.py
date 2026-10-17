@@ -143,15 +143,23 @@ class ServerSessions(unittest.TestCase):
             save.assert_not_called()
 
     def test_session_pagination_does_not_skip_rows_when_size_limited(self):
-        rows = [{'session_id': str(i), 'title': 'x' * 200} for i in range(30)]
+        from uuid import UUID
+        from ai_bridge.management import Sessions
+        rows = [{'session_id': str(UUID(int=i + 1)), 'title': 'x' * 200} for i in range(30)]
+        expected = Sessions(server.CFG, server.JOBS).enrich('codex', rows)
         with patch.object(server.ag, 'list_sessions', return_value=rows), patch.object(server.CFG, 'max_output_chars', 1800):
             found = []
             offset = 0
             while offset is not None:
                 page = json.loads(server.agent_sessions('codex', limit=30, offset=offset))
                 found.extend(page['sessions'])
-                offset = page['next_offset']
-            self.assertEqual(found, rows)
+                self.assertTrue(page['sessions'])
+                next_offset = page['next_offset']
+                if next_offset is not None:
+                    self.assertGreater(next_offset, offset)
+                offset = next_offset
+            self.assertEqual(found, expected)
+            self.assertEqual(len({row['session_id'] for row in found}), len(rows))
 
     def test_history_pages_back_without_skipping_or_repeating(self):
         messages = [{'role': 'user', 'text': str(i) + 'x' * 200} for i in range(30)]

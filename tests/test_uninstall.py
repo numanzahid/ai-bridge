@@ -75,39 +75,6 @@ class UninstallTests(unittest.TestCase):
     def plan(self, user=None):
         return removal.Plan(self.layout, self.lookup, self.systemctl).build(user)
 
-    def test_registered_cli_removed_unregistered_executable_preserved(self):
-        import cli_install
-        import hashlib
-        target, record = cli_install.layout(self.home)
-        target.parent.mkdir(parents=True)
-        target.write_text('foreign command')
-        plan = self.plan()
-        self.assertNotIn(str(target), {row['path'] for row in plan.targets})
-        self.assertTrue(any('Unregistered' in note for note in plan.notes))
-        target.write_bytes(Path('ai-bridge').read_bytes())
-        target.chmod(0o755)
-        record.write_text(json.dumps({'schema': 1, 'uid': self.account.pw_uid,
-                                     'path': str(target), 'sha256': hashlib.sha256(target.read_bytes()).hexdigest()}))
-        record.chmod(0o600)
-        plan = self.plan()
-        self.assertIn(str(target), {row['path'] for row in plan.targets})
-        with contextlib.redirect_stdout(io.StringIO()):
-            plan.execute()
-        self.assertFalse(target.exists())
-        self.assertTrue(target.parent.exists())
-
-    def test_modified_registered_cli_aborts_uninstall(self):
-        import cli_install
-        target, record = cli_install.layout(self.home)
-        target.parent.mkdir(parents=True)
-        target.write_text('modified')
-        record.write_text(json.dumps({'schema': 1, 'uid': self.account.pw_uid, 'path': str(target), 'sha256': 'wrong'}))
-        record.chmod(0o600)
-        with self.assertRaisesRegex(removal.Refusal, 'Launcher ownership'):
-            self.plan()
-        self.assertEqual(target.read_text(), 'modified')
-        self.assertFalse(any(call[0] == 'stop' for call in self.calls))
-
     def test_identity_comes_from_unit_not_invoker_home_and_full_manifest(self):
         with patch.dict(os.environ, HOME='/wrong/invoker', AI_BRIDGE_CONFIG_DIR='/unrelated'):
             plan = self.plan()

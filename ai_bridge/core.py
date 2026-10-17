@@ -270,6 +270,17 @@ class Jobs:
 
     def _refresh(self, meta: dict) -> dict:
         from .execution import identity_matches
+        # Backfill before any retention decision, including finalized jobs.
+        if meta.get('invocation_origin') == 'mcp':
+            from .provenance import Provenance
+            previous_error = meta.get('provenance_error')
+            try:
+                if Provenance(self.cfg).backfill(self, meta) is True:
+                    meta.pop('provenance_error', None)
+            except (OSError, ValueError) as error:
+                meta['provenance_error'] = str(error)[:300]
+            if meta.get('provenance_error') != previous_error:
+                self.save(meta)
         child = self._children.get(meta.get('id'))
         if child and child.poll() is not None:
             self._children.pop(meta['id'], None)
@@ -346,7 +357,9 @@ class Jobs:
         payload = {'id': job_id, 'root': str(self.dir), 'argv': argv, 'cwd': cwd,
                    'sudo': sudo, 'password': self.cfg.sudo_password if sudo else None,
                    'log_bytes': self.cfg.job_log_bytes, 'agent': meta.get('agent'),
-                   'timeout': meta.get('timeout')}
+                   'timeout': meta.get('timeout'),
+                   'provenance_job': {k: meta.get(k) for k in
+                       ('id', 'kind', 'agent', 'invocation_origin', 'requested_session_id')}}
         import selectors
         pending = memoryview(json.dumps(payload).encode())
         os.set_blocking(proc.stdin.fileno(), False)
@@ -499,6 +512,9 @@ class Jobs:
         cutoff = time.time()-self.cfg.retention_days*86400
         for meta in self.list(limit=None):
             if meta.get('status') not in ('done', 'failed', 'killed') or not meta.get('ended') or meta['ended'] >= cutoff:
+                continue
+            # Do not expire the only evidence after a failed provenance write.
+            if meta.get('provenance_error'):
                 continue
             from .job_paths import KINDS, sidecar_path
             for kind in KINDS:

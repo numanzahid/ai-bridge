@@ -521,7 +521,8 @@ def agent_send(
     args = {"agent": agent, "cwd": cwd, "session_id": session_id, "task_id": task_id}
     try:
         with AGENT_START_LOCK:
-            meta = start_agent(CFG, JOBS, agent, prompt, cwd, session_id, permission, model, task_id, timeout)
+            meta = start_agent(CFG, JOBS, agent, prompt, cwd, session_id, permission, model, task_id, timeout,
+                               invocation_origin="mcp")
     except Exception as error:
         return _out('agent_send', args, {'error': str(error)})
     return agent_wait(meta["id"], wait_seconds)
