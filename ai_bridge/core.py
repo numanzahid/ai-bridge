@@ -45,6 +45,7 @@ class Config:
     job_log_bytes: int = 4194304
     retention_days: int = 0
     audit_bytes: int = 2097152
+    tasks_dir: Path = Path.home() / ".ai-bridge-tasks"
 
     @classmethod
     def load(cls) -> "Config":
@@ -66,6 +67,7 @@ class Config:
             port=int(_env("AI_BRIDGE_PORT", "8765")),
             allowed_hosts=[h.strip() for h in _env("AI_BRIDGE_ALLOWED_HOSTS").split(",") if h.strip()],
             allowed_origins=[h.strip() for h in _env("AI_BRIDGE_ALLOWED_ORIGINS").split(",") if h.strip()],
+            tasks_dir=Path(_env("AI_BRIDGE_TASKS_DIR") or Path.home() / ".ai-bridge-tasks"),
             default_cwd=_env("AI_BRIDGE_DEFAULT_CWD") or str(Path.home()),
             state_dir=state_dir,
             max_output_chars=int(_env("AI_BRIDGE_MAX_OUTPUT_CHARS", "30000")),
@@ -289,6 +291,7 @@ class Jobs:
             meta['exit_code'] = result.get('exit_code')
             meta['ended'] = result.get('ended')
             meta['cleanup'] = result.get('cleanup')
+            meta['timed_out'] = result.get('timed_out', False)
             if 'privilege' in result:
                 meta['privilege'] = result['privilege']
             if result.get('cleanup', {}).get('complete') is False:
@@ -342,7 +345,8 @@ class Jobs:
         self.save(meta)
         payload = {'id': job_id, 'root': str(self.dir), 'argv': argv, 'cwd': cwd,
                    'sudo': sudo, 'password': self.cfg.sudo_password if sudo else None,
-                   'log_bytes': self.cfg.job_log_bytes, 'agent': meta.get('agent')}
+                   'log_bytes': self.cfg.job_log_bytes, 'agent': meta.get('agent'),
+                   'timeout': meta.get('timeout')}
         import selectors
         pending = memoryview(json.dumps(payload).encode())
         os.set_blocking(proc.stdin.fileno(), False)
@@ -476,7 +480,14 @@ class Jobs:
 
     def running_for_session(self, agent: str, session_id: str) -> dict | None:
         for m in self.list(limit=None, kind='agent'):
-            if (m['status'] in ('running', 'cleanup_incomplete') or (m['status'] == 'lost' and m.get('identity_state') != 'previous_boot')) and m.get('agent') == agent and m.get('session_id') == session_id:
+            uncertain = (m['status'] in ('running', 'cleanup_incomplete') or
+                         (m['status'] == 'lost' and m.get('identity_state') != 'previous_boot'))
+            if not uncertain or m.get('agent') != agent:
+                continue
+            observed = m.get('session_id')
+            if observed is None:
+                observed = (self.output_info(m['id']).get('parsed') or {}).get('session_id')
+            if observed == session_id:
                 return m
         return None
 

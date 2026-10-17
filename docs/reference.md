@@ -1,6 +1,6 @@
 # Tool reference
 
-The bridge exposes 20 MCP tools. `tools/list` is the authoritative parameter
+The bridge exposes 23 MCP tools. `tools/list` is the authoritative parameter
 schema; examples below describe defaults and limits. Read-only annotations are
 client hints, not authorization. The shared token can invoke mutating tools too.
 All paths and native agents use the service identity unless a tool requests sudo.
@@ -152,10 +152,27 @@ host shell/file/job tools. CLI output/storage formats can change independently.
 |---|---|
 | `agent_list()` | Installation/discovery and configured permission information. |
 | `agent_models(agent, limit=30, offset=0)` | On-demand live/cached/unavailable model catalog; page limit up to 100. |
-| `agent_send(agent, prompt, cwd=null, session_id=null, permission=null, model=null, wait_seconds=30)` | Start a turn; wait up to 110 seconds. Omit session ID for a new chat. Default permission comes from config (`edit`). |
+| `agent_send(agent, prompt, cwd=null, session_id=null, permission=null, model=null, wait_seconds=30, task_id=null, timeout=null)` | Start a turn; wait up to 110 seconds. Omit session ID for a new chat. Default permission comes from config (`edit`). |
 | `agent_wait(job_id, wait_seconds=60, progress_lines=15)` | Poll a turn up to 110 seconds; recent activity capped at 100 lines. Returns lifecycle, outcome, result and known session ID. |
 | `agent_sessions(agent, cwd=null, limit=15, offset=0)` | Saved local chats, newest first; optional project filter, page limit up to 100. |
+| `agent_runtime(job_id=null)` | Managed agent jobs or one exact job; verifies runner/target identities and reports observed lineage and runner resources. Unrelated native services are not managed. |
+| `agent_stop(job_id)` | Cancel an exact managed agent job; returns cleanup scope and any uncertainty. No session/name-based kill. |
+| `tasks_list(limit=30, offset=0)` | Discover private task IDs/workspaces for reuse; page limit up to 100. Cleanup is host CLI only. |
 | `agent_history(agent, session_id, last_n=30, include_tools=true, max_chars_per_message=2000, offset=0)` | Read stored conversation without a model turn. Up to 300 entries and 10000 chars/message; overall response budget may reduce the page. |
+
+Without `cwd`, `session_id` or `task_id`, agent_send creates a unique private task
+under `~/.ai-bridge-tasks/`. Explicit cwd remains a project; task_id reuses shared
+files with peer-job warnings. Resume always uses the original workspace and rejects
+conflicts. Optional timeout is 1..604800 seconds; omission leaves the turn unlimited.
+Tasks are workspaces, not sandboxes. New replies include task/workspace linkage.
+
+Listings add `mode`, `session_type`, `native_source`, ownership, bridge-job status,
+task linkage and optional bridge display aliases. Unknown provenance stays unknown;
+`idle` means no matching bridge job, not proof no native process is using the chat.
+Archived overlays hide records from default lists. See [host CLI](agent-management.md)
+for `ai-bridge sessions ...`, filters, reversible archive, safe cleanup and native
+interactive resume. Register the command explicitly with `bash install.sh --install-cli`
+as the service user after activation; no token is required.
 
 ### Continue an existing chat
 

@@ -21,6 +21,12 @@ Instructions and skills:
 - Named resources use resources/read; selected prompt templates use prompts/get. Bodies are on demand.
 
 Native coding agents:
+- New agent work without cwd/session/task creates a private ~/.ai-bridge-tasks/ workspace.
+  Use explicit cwd for a project, or task_id to share files; coordinate edits with peers.
+  Tasks are not sandboxes. Resume always uses the saved workspace; conflicts are rejected.
+- agent_runtime observes managed jobs; agent_stop cancels one exact job_id. Inspect cleanup:
+  sampled lineage cannot certify that detached/privileged descendants are gone.
+  Saved sessions are not processes. Never stop unrelated native services by name.
 - agent_send starts a turn; poll agent_wait while status is running, then report outcome and result.
   Continue with the exact session_id; never start a replacement chat when asked to resume.
 - agent_sessions lists saved chats and project paths. Follow next_offset. Use agent_history to read

@@ -123,6 +123,8 @@ def _wait_job(job_id: str, seconds: int):
 
 def _job_view(meta: dict, tail_lines: int = 60) -> dict:
     view = {
+        "task_id": meta.get("task_id"),
+        "workspace_type": meta.get("workspace_type"),
         "job_id": meta["id"],
         "status": meta["status"],
         "exit_code": meta.get("exit_code"),
@@ -337,6 +339,8 @@ def list_jobs(limit: int = 20) -> str:
             "status": m["status"],
             "agent": m.get("agent"),
             "session_id": m.get("session_id"),
+            "task_id": m.get("task_id"),
+            "workspace_type": m.get("workspace_type"),
             "command": (m.get("display") or "")[:120],
             "started": _fmt_time(m.get("started")),
             **job_fields(m),
@@ -497,53 +501,29 @@ def agent_send(
     permission: Permission | None = None,
     model: str | None = None,
     wait_seconds: int = 30,
+    task_id: str | None = None,
+    timeout: int | None = None,
 ) -> str:
     """Send a prompt to a local coding agent and start a turn. Returns job_id (and the result if it finishes fast).
 
     agent: claude (Claude Code), codex (OpenAI Codex CLI), cursor (Cursor CLI).
     prompt: what the agent should do.
     cwd: project directory; on resume it is inferred from the saved session. A conflicting cwd is rejected.
+    task_id: reuse a managed workspace. Without cwd/session/task, a private task is created.
+    timeout: optional turn deadline in seconds (1..604800); omitted means unlimited.
     session_id: continue an existing session (from a previous result or agent_sessions). Omit for a new session.
     permission: full = run anything without asking; edit = edit files, limited commands;
                 readonly = analyse/plan only. Default comes from server config.
     model: optional model name for that CLI.
     wait_seconds: wait up to this long (max 110) before returning. Poll with agent_wait after.
     """
-    perm = permission or CFG.agent_default_permission
-    args = {"agent": agent, "cwd": cwd, "session_id": session_id, "permission": perm, "model": model, "prompt_chars": len(prompt)}
-    if agent not in ag.AGENTS:
-        return _out("agent_send", args, {"error": f"agent must be one of {ag.AGENTS}"})
-    if perm not in ag.PERMISSIONS:
-        return _out("agent_send", args, {"error": f"permission must be one of {ag.PERMISSIONS}"})
+    from .management import start_agent
+    args = {"agent": agent, "cwd": cwd, "session_id": session_id, "task_id": task_id}
     try:
-        binary = ag.find_binary(agent)
-        if not binary:
-            return _out("agent_send", args, {"error": f"{agent} CLI is not installed or not on PATH. Check agent_list."})
-        workdir = resolve_cwd(CFG, ag.resume_cwd(agent, session_id, cwd) if session_id is not None else cwd)
-    except Exception as e:
-        return _out("agent_send", args, {"error": str(e)})
-    try:
-        argv = ag.build_argv(agent, binary, prompt, session_id, perm, model)
-    except Exception as e:
-        return _out("agent_send", args, {"error": str(e)})
-    # Serialize the busy check and process start; concurrent MCP requests must
-    # not launch two bridge turns against the same session.
-    with AGENT_START_LOCK:
-        if session_id is not None:
-            busy = JOBS.running_for_session(agent, session_id)
-            if busy:
-                return _out("agent_send", args, {"error": f"Session is busy with job {busy['id']}. Wait for it or kill it first."})
-        try:
-            meta = JOBS.start(
-                argv,
-                workdir,
-                kind="agent",
-                display=f"{agent}: resume {session_id}" if session_id else f"{agent}: new turn",
-                extra={"agent": agent, "session_id": session_id, "requested_session_id": session_id,
-                       "permission": perm, "model": model},
-            )
-        except Exception as error:
-            return _out('agent_send', args, {'error': f'Could not start {agent}: {error}'})
+        with AGENT_START_LOCK:
+            meta = start_agent(CFG, JOBS, agent, prompt, cwd, session_id, permission, model, task_id, timeout)
+    except Exception as error:
+        return _out('agent_send', args, {'error': str(error)})
     return agent_wait(meta["id"], wait_seconds)
 
 
@@ -584,6 +564,12 @@ def agent_wait(job_id: str, wait_seconds: int = 60, progress_lines: int = 15) ->
 
     view = {
         "job_id": job_id,
+        "task_id": meta.get("task_id"),
+        "workspace_type": meta.get("workspace_type"),
+        "workspace_peers": meta.get("workspace_peers", []),
+        "workspace_note": meta.get("workspace_note"),
+        "timeout": meta.get("timeout"),
+        "timed_out": meta.get("timed_out", False),
         "agent": meta["agent"],
         "status": meta["status"],
         "session_id": meta.get("session_id"),
@@ -645,7 +631,8 @@ def agent_sessions(agent: AgentName, cwd: str | None = None, limit: int = 15, of
     limit, offset = max(1, min(limit, 100)), max(0, offset)
     args = {"agent": agent, "cwd": cwd, "limit": limit, "offset": offset}
     try:
-        rows = ag.list_sessions(agent, cwd, None)
+        from .management import Sessions
+        rows = Sessions(CFG, JOBS).enrich(agent, ag.list_sessions(agent, cwd, None))
     except Exception as e:  # noqa: BLE001
         return _out("agent_sessions", args, {"error": f"Could not read {agent} sessions: {e}"})
     page = rows[offset:offset + limit]
@@ -659,6 +646,35 @@ def agent_sessions(agent: AgentName, cwd: str | None = None, limit: int = 15, of
         page.pop()
         payload["next_offset"] = offset + len(page)
     return _out("agent_sessions", args, payload)
+
+
+@bridge_tool(annotations=RO)
+def agent_runtime(job_id: str | None = None) -> str:
+    """Inspect managed agent jobs and verified runner resources. Native services are not managed here."""
+    from .management import runtime
+    return _out('agent_runtime', {'job_id': job_id}, runtime(JOBS, job_id))
+
+
+@bridge_tool(annotations=RW)
+def agent_stop(job_id: str) -> str:
+    """Cancel one exact managed agent job. Reports cleanup limits; never stops by name or saved session ID."""
+    from .management import stop_agent
+    return _out('agent_stop', {'job_id': job_id}, stop_agent(JOBS, job_id))
+
+
+@bridge_tool(annotations=RO)
+def tasks_list(limit: int = 30, offset: int = 0) -> str:
+    """List private managed workspaces. Pass task_id to agent_send to share a workspace; coordinate edits."""
+    from .management import Tasks
+    rows = Tasks(CFG).list()
+    offset, limit = max(0, offset), max(1, min(limit, 100))
+    page = rows[offset:offset + limit]
+    payload = {'tasks': page, 'total': len(rows), 'offset': offset,
+               'next_offset': offset + len(page) if offset + len(page) < len(rows) else None}
+    while len(json.dumps(payload)) > CFG.max_output_chars - 500 and len(page) > 1:
+        page.pop()
+        payload['next_offset'] = offset + len(page)
+    return _out('tasks_list', {}, payload)
 
 
 @bridge_tool(annotations=RO)

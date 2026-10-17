@@ -134,11 +134,20 @@ def main():
             process_state['privilege'] = value
             private_json(sidecar_path(root, job_id, 'process'), process_state)
     def started(pid, identity):
-        process_state.update(pid=pid, identity=identity)
+        try:
+            target_cgroup = Path(f'/proc/{pid}/cgroup').read_text()
+        except OSError:
+            target_cgroup = None
+        process_state.update(pid=pid, identity=identity, target_cgroup=target_cgroup)
         private_json(sidecar_path(root, job_id, 'process'), process_state)
+    def lineage_changed(value):
+        if process_state.get('descendants') != value:
+            process_state['descendants'] = value
+            private_json(sidecar_path(root, job_id, 'process'), process_state)
     try:
-        result = execute(cfg, payload['argv'], payload['cwd'], None, payload['sudo'],
-                         on_output=recorder.add, cancel=cancelled.is_set, on_start=started, on_privilege=privilege_changed)
+        result = execute(cfg, payload['argv'], payload['cwd'], payload.get('timeout'), payload['sudo'],
+                         on_output=recorder.add, cancel=cancelled.is_set, on_start=started, on_privilege=privilege_changed,
+                         track_children=bool(payload.get("agent")), on_lineage=lineage_changed)
     except Exception as error:
         recorder.add('stderr', ('Job startup/execution failed: '+str(error)+'\n').encode())
         from .privilege import initial, fields

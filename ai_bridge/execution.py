@@ -146,6 +146,74 @@ def terminate_group(pid: int, grace: float = .5) -> dict:
             'scope': 'original process group; detached descendants are not guaranteed'}
 
 
+class Descendants:
+    """Observe owned lineage without assuming names identify ownership."""
+    def __init__(self, pid):
+        self.root = pid
+        self.root_identity = process_identity(pid)
+        self.known = {}
+        self.cgroup = self._cgroup(pid)
+
+    @staticmethod
+    def _cgroup(pid):
+        try:
+            return Path(f'/proc/{pid}/cgroup').read_text()
+        except OSError:
+            return None
+
+    def sample(self):
+        anchors = {pid: identity for pid, identity in self.known.items() if identity_matches(pid, identity)}
+        if identity_matches(self.root, self.root_identity):
+            anchors[self.root] = self.root_identity
+        pending = list(anchors)
+        inspected = set()
+        # Read only verified families, rather than scanning every host process per job.
+        while pending and len(inspected) < 256:
+            parent = pending.pop()
+            if parent in inspected or not identity_matches(parent, anchors[parent]):
+                continue
+            inspected.add(parent)
+            try:
+                children = set()
+                for thread in Path(f'/proc/{parent}/task').iterdir():
+                    children.update(int(pid) for pid in (thread / 'children').read_text().split())
+                if not identity_matches(parent, anchors[parent]):
+                    continue
+                for pid in children:
+                    entry = Path(f'/proc/{pid}')
+                    fields = (entry / 'stat').read_text().rsplit(') ', 1)[1].split()
+                    identity = process_identity(pid)
+                    if int(fields[1]) == parent and entry.stat().st_uid == os.getuid() and identity:
+                        if len(self.known) >= 256 and pid not in self.known:
+                            continue
+                        self.known.setdefault(pid, identity)
+                        anchors[pid] = self.known[pid]
+                        pending.append(pid)
+            except (OSError, ValueError, IndexError):
+                continue
+        return {str(pid): identity for pid, identity in self.known.items() if identity_matches(pid, identity)}
+
+    def cancel(self):
+        self.sample()
+        denied = []
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            for pid, identity in list(self.known.items()):
+                if not identity_matches(pid, identity):
+                    continue
+                if self.cgroup is None or self._cgroup(pid) != self.cgroup:
+                    denied.append(pid)
+                    continue
+                try:
+                    signal_verified(pid, identity, sig)
+                except (OSError, ValueError):
+                    denied.append(pid)
+            time.sleep(.05)
+        survivors = list(self.sample())
+        return {'observed_descendants_complete': not survivors and not denied,
+                'surviving_observed_pids': survivors, 'unsignalled_pids': sorted(set(denied)),
+                'coverage': 'Sampled lineage (up to 256 identities); rapidly detached or privileged descendants may escape observation.'}
+
+
 class Capture:
     """Keep a bounded head and tail while continuing to drain a pipe."""
     def __init__(self, limit: int):
@@ -167,7 +235,8 @@ class Capture:
 
 
 def execute(cfg, argv: list[str], cwd: str, timeout: float | None, sudo=False,
-            stdin_data=b'', on_output=None, cancel=None, on_start=None, on_privilege=None) -> dict:
+            stdin_data=b'', on_output=None, cancel=None, on_start=None, on_privilege=None,
+            track_children=False, on_lineage=None) -> dict:
     from .core import child_env
     started = time.monotonic()
     captures = {'stdout': Capture(cfg.capture_bytes), 'stderr': Capture(cfg.capture_bytes)}
@@ -185,13 +254,15 @@ def execute(cfg, argv: list[str], cwd: str, timeout: float | None, sudo=False,
         manager = sudo_command(cfg, wrapped, child_env()) if sudo else _plain(argv, child_env())
         with manager as (command, env):
             return _execute(command, env, cwd, timeout, stdin_data, on_output, cancel,
-                            on_start, on_privilege, privilege, disclose, receipt, started, captures)
+                            on_start, on_privilege, privilege, disclose, receipt, started, captures, track_children, on_lineage)
 
 
 def _execute(command, env, cwd, timeout, stdin_data, on_output, cancel,
-             on_start, on_privilege, privilege, disclose, receipt, started, captures):
+             on_start, on_privilege, privilege, disclose, receipt, started, captures, track_children, on_lineage):
     from .privilege import fields
     cleanup = None
+    lineage = None
+    last_sample = 0
     timed_out = cancelled = False
     def report():
         if privilege['sudo_attempted']:
@@ -205,6 +276,25 @@ def _execute(command, env, cwd, timeout, stdin_data, on_output, cancel,
     try:
         proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        lineage = Descendants(proc.pid) if track_children else None
+        def stop_target():
+            if not lineage:
+                return terminate_group(proc.pid)
+            lineage.sample()
+            errors = []
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                if not identity_matches(proc.pid, lineage.root_identity):
+                    break
+                if lineage.cgroup is None or lineage._cgroup(proc.pid) != lineage.cgroup:
+                    errors.append('Target cgroup changed; signal refused.')
+                    break
+                try:
+                    signal_verified(proc.pid, lineage.root_identity, sig)
+                except (OSError, ValueError) as error:
+                    errors.append(str(error))
+                time.sleep(.05)
+            return {'complete': False, 'scope': 'verified target and sampled lineage; no group signalling',
+                    'root_signal_errors': errors}
         privilege['sudo_attempted'] = privilege['method'] == 'sudo'
         if not privilege['sudo_attempted']:
             privilege.update(target_started=True, effective_uid=os.geteuid(), effective_root=os.geteuid() == 0)
@@ -228,10 +318,15 @@ def _execute(command, env, cwd, timeout, stdin_data, on_output, cancel,
                 if not privilege['target_started']:
                     report()
                 now = time.monotonic()
+                if lineage and now - last_sample >= .2:
+                    observed = lineage.sample()
+                    if on_lineage:
+                        on_lineage(observed)
+                    last_sample = now
                 if stop_deadline is None and ((timeout is not None and now-started >= timeout) or (cancel and cancel())):
                     timed_out = timeout is not None and now-started >= timeout
                     cancelled = not timed_out
-                    cleanup = terminate_group(proc.pid)
+                    cleanup = stop_target()
                     stop_deadline = time.monotonic()+.3
                 if stop_deadline is not None and now >= stop_deadline:
                     break
@@ -262,10 +357,15 @@ def _execute(command, env, cwd, timeout, stdin_data, on_output, cancel,
             while proc.poll() is None and stop_deadline is None:
                 if not privilege['target_started']:
                     report()
+                if lineage and time.monotonic() - last_sample >= .2:
+                    observed = lineage.sample()
+                    if on_lineage:
+                        on_lineage(observed)
+                    last_sample = time.monotonic()
                 if (timeout is not None and time.monotonic()-started >= timeout) or (cancel and cancel()):
                     timed_out = timeout is not None and time.monotonic()-started >= timeout
                     cancelled = not timed_out
-                    cleanup = terminate_group(proc.pid)
+                    cleanup = stop_target()
                     break
                 time.sleep(.025)
         finally:
@@ -288,6 +388,20 @@ def _execute(command, env, cwd, timeout, stdin_data, on_output, cancel,
         result[name] = capture.value().decode(errors='replace')
         result[name+'_bytes'] = capture.total
         result[name+'_truncated'] = capture.total > len(capture.value())
+    if lineage:
+        result['lineage_coverage'] = 'Sampled same-user descendants in the original cgroup; not a containment boundary.'
+        if cleanup is not None:
+            cleanup['original_group_complete'] = not group_alive(proc.pid)
+            cleanup.update(lineage.cancel())
+            cleanup['complete'] = False
+            cleanup['note'] = 'No isolated cgroup: whole-tree cleanup cannot be certified; inspect before retrying.'
+        else:
+            survivors = list(lineage.sample())
+            if survivors:
+                cleanup = {'complete': False, 'surviving_observed_pids': survivors,
+                           'note': 'Agent exited with observed descendants still running; no automatic termination.'}
+        if on_lineage:
+            on_lineage(lineage.sample())
     if cleanup is not None:
         if privilege['sudo_attempted']:
             cleanup['original_group_complete'] = cleanup['complete']

@@ -15,6 +15,17 @@ import sys
 import tempfile
 
 
+def registered_launcher(home, uid):
+    # Isolated script execution must not search ambient module paths.
+    from importlib.util import module_from_spec, spec_from_file_location
+    if not exists(home / '.local/share/ai-bridge/.cli-launcher.json'):
+        return None
+    spec = spec_from_file_location('bridge_cli_ownership', Path(__file__).with_name('cli_install.py'))
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.registered_launcher(home, uid)
+
+
 class Refusal(ValueError):
     pass
 
@@ -234,6 +245,14 @@ class Plan:
             if not recognizable or app.stat().st_uid != account.pw_uid:
                 raise Refusal(f'Unmanaged application directory: {app}')
             self.add(app, 'installed releases, environments and legacy application')
+        try:
+            launcher = registered_launcher(home, account.pw_uid)
+        except (OSError, ValueError) as error:
+            raise Refusal(f'Launcher ownership needs manual review: {error}') from error
+        if launcher:
+            self.add(launcher, 'registered owned host CLI launcher')
+        elif exists(home / '.local/bin/ai-bridge'):
+            self.notes.append('Unregistered ai-bridge executable retained; inspect its ownership manually.')
         candidates = list(paths.items())
         for kind, suffix in (('config', '.config/ai-bridge'), ('state', '.local/state/ai-bridge')):
             default = home/suffix

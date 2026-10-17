@@ -118,7 +118,8 @@ systemd EnvironmentFile, not a shell script: use literal values. Restart to appl
 | `AI_BRIDGE_HOST`, `AI_BRIDGE_PORT` | `127.0.0.1`, `8765` |
 | `AI_BRIDGE_ALLOWED_HOSTS` | Empty; set your public hostname, including explicit port forms when used. |
 | `AI_BRIDGE_ALLOWED_ORIGINS` | Optional comma-separated extra origins; applies with host validation. |
-| `AI_BRIDGE_DEFAULT_CWD` | Service user's home |
+| `AI_BRIDGE_DEFAULT_CWD` | Service user's home for shell/file jobs; new agent work uses managed tasks. |
+| `AI_BRIDGE_TASKS_DIR` | `~/.ai-bridge-tasks`; private managed workspaces, no automatic deletion. |
 | `AI_BRIDGE_AGENT_DEFAULT_PERMISSION` | `edit`; controls agent flags, not shell/file access. |
 | `AI_BRIDGE_CONFIG_DIR` | Otherwise `$XDG_CONFIG_HOME/ai-bridge` or `~/.config/ai-bridge` |
 | `AI_BRIDGE_STATE_DIR` | `~/.local/state/ai-bridge` |
@@ -158,3 +159,7 @@ remote shell utilities and the selected transfer subsystem are available; upload
 need GNU `ln -T`. Remote sudo must already work noninteractively with `sudo -n`;
 the bridge never stores or forwards remote passwords. Keep existing local sudo
 credentials separate. See [SSH tools](reference.md#ssh-administration) for limits.
+
+After verified activation, run `bash install.sh --install-cli` as the service
+user to register `~/.local/bin/ai-bridge` (ensure it is on PATH). It changes no
+service/release selection. Use matching state/task paths for token-free commands; see [agent management](agent-management.md). Normal server startup is unchanged.

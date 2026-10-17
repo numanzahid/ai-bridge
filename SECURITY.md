@@ -32,6 +32,12 @@ No response-time or supported-version guarantee is promised.
   prefer bearer headers where supported and rotate after suspected exposure.
 - Redaction covers known bridge secrets and selected encodings, not arbitrary
   data, transformations, external logs or command-created files.
+- Task directories and metadata are private workspaces, not filesystem isolation.
+  Same-user code can alter them; locking does not constrain unrelated writers.
+  Cleanup refuses uncertain jobs and, by default, uninspectable same-user processes.
+  CLI `--yes --allow-uninspectable` explicitly accepts the risk of deleting files
+  those enumerated PIDs may use; it bypasses no other cleanup guards. Task
+  workspaces remain after full uninstall; remove verified tasks separately.
 - Restart/stop may leave detached jobs running. Cancellation and rollback cannot
   undo completed work. Privilege metadata reports launch, not task success.
 

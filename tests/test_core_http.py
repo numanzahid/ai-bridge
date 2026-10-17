@@ -66,7 +66,7 @@ class CoreHTTPTests(unittest.TestCase):
             env = os.environ.copy()
             env.pop('CREDENTIALS_DIRECTORY', None)
             env.update(AI_BRIDGE_TOKEN=TOKEN, AI_BRIDGE_HOST='127.0.0.1', AI_BRIDGE_PORT=str(port),
-                       AI_BRIDGE_STATE_DIR=str(root/'state'), AI_BRIDGE_CONFIG_DIR=str(root/'config'),
+                       AI_BRIDGE_TASKS_DIR=str(root/'tasks'), AI_BRIDGE_STATE_DIR=str(root/'state'), AI_BRIDGE_CONFIG_DIR=str(root/'config'),
                        AI_BRIDGE_DEFAULT_CWD=str(root), AI_BRIDGE_SKILL_DIRS=str(root/'skills'),
                        AI_BRIDGE_ALLOWED_HOSTS='bridge.test,bridge.test:443,bridge.test:8443',
                        AI_BRIDGE_ALLOWED_ORIGINS='https://extra.test',
@@ -128,7 +128,7 @@ class CoreHTTPTests(unittest.TestCase):
         self.assertIn('tell the user the task and target', initialized['instructions'])
         tools = self.rpc(base, 'tools/list', {})['tools']
         self.assertIn('run_command', {tool['name'] for tool in tools})
-        self.assertEqual(len(tools), 20)
+        self.assertEqual(len(tools), 23)
         result = self.tool(base, 'run_command', {'command': 'printf core-ok'})
         self.assertEqual(result['stdout'], 'core-ok')
         self.assertIn('agents', self.tool(base, 'system_info', {}))
@@ -146,6 +146,25 @@ class CoreHTTPTests(unittest.TestCase):
         self.assertIn('background-ok', result['output_tail'])
         self.assertEqual((root/'state/audit.log').stat().st_mode & 0o777, 0o600)
         self.assertNotIn(TOKEN, (root/'state/audit.log').read_text())
+
+    def test_managed_task_and_runtime_tools_without_live_agents(self):
+        with self.running('usage_limit') as (root, base):
+            job = self.tool(base, 'agent_send', {'agent': 'cursor', 'prompt': 'fixture', 'wait_seconds': 0})
+            self.assertTrue(job['task_id'].startswith('task-'))
+            self.assertTrue(Path(job['cwd']).is_relative_to(root / 'tasks'))
+            tasks = self.tool(base, 'tasks_list', {})
+            self.assertEqual(tasks['total'], 1)
+            self.assertEqual(tasks['tasks'][0]['task_id'], job['task_id'])
+            observed = self.tool(base, 'agent_runtime', {'job_id': job['job_id']})
+            self.assertTrue(observed['managed'])
+            result = self.tool(base, 'agent_wait', {'job_id': job['job_id'], 'wait_seconds': 2})
+            self.assertNotEqual(result['status'], 'running')
+            stopped = self.tool(base, 'agent_stop', {'job_id': job['job_id']})
+            self.assertEqual(stopped['job_id'], job['job_id'])
+            second = self.tool(base, 'agent_send', {'agent': 'cursor', 'prompt': 'fixture',
+                               'task_id': job['task_id'], 'wait_seconds': 1})
+            self.assertEqual(second['cwd'], job['cwd'])
+            self.assertIn('error', self.tool(base, 'agent_send', {'agent': 'cursor', 'prompt': 'fixture', 'task_id': ''}))
 
     def test_core_http_without_any_coding_clis(self):
         with self.running('missing') as (root, base):

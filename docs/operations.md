@@ -42,7 +42,7 @@ the current request return before restarting; a detached host job can do that:
 sudo systemd-run --collect --on-active=3s /usr/bin/systemctl restart ai-bridge
 ```
 
-Verify authenticated initialization, all 20 tools, a harmless call, unauthorized
+Verify authenticated initialization, all 23 tools, a harmless call, unauthorized
 rejection and HTTPS reachability from the intended client. Health alone is not
 an MCP/authentication test. Refresh client metadata after updates. With explicit
 authorization, test sudo using a harmless identity command and inspect both
@@ -133,6 +133,16 @@ Inspect selected method, phase, outcome, commit and staging cleanup. Never blind
 retry an unconfirmed commit. Real aliases/remote transfers require separate live
 validation after deployment; regression tests use disposable files/fake binaries.
 
+## Agent jobs and task workspaces
+
+Register `ai-bridge` once with `bash install.sh --install-cli` as the service user
+after verified activation. The launcher follows `current` through upgrades/rollback;
+no activation hook overwrites it. The [host CLI](agent-management.md) manages jobs, sessions and task cleanup without
+an HTTP token. Run as the service user with matching state/task paths. Inspect
+exact job IDs before stopping; sampled lineage cannot certify whole-tree cleanup.
+`cleanup_incomplete` requires local review. Task workspaces have no automatic
+retention and remain after full uninstall; preview cleanup separately.
+
 ## Full uninstall
 
 This permanently removes recognized **bridge artifacts**, not the whole server.
@@ -161,6 +171,9 @@ Identity comes from the unit and passwd entry, not caller HOME. The private
 ownership registry can recover it if the unit is gone. For reviewed legacy
 remnants without either, add `--user <account>` and preview again. Non-root callers
 use sudo; without a terminal it uses `-n` rather than waiting for a password.
+
+Registered launcher removal checks its per-account path, ownership and SHA256;
+unregistered commands remain, and changed registered files require manual review.
 
 Fresh setup attempts a root-private record at
 `/var/lib/ai-bridge/installation.json`; registration failure warns without breaking

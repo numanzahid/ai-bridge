@@ -367,11 +367,14 @@ def claude_sessions(cwd: str | None, limit: int | None) -> list[dict]:
     for f in files:
         sid = Path(f).stem
         first, scwd, summary, n = None, None, None, 0
+        mode, native_source = "unknown", None
         for e in _iter_jsonl(Path(f), max_lines=400):
             if e.get("type") in ("summary", "custom-title"):
                 summary = e.get("customTitle") or e.get("summary") or summary
             if e.get("isSidechain"):
                 continue
+            if e.get('entrypoint') == 'sdk-cli' or e.get('promptSource') == 'sdk':
+                mode, native_source = 'noninteractive', 'sdk-cli'
             scwd = scwd or e.get("cwd")
             if e.get("type") == "user" and first is None and not e.get("isMeta"):
                 first = _claude_user_text(e)
@@ -387,9 +390,13 @@ def claude_sessions(cwd: str | None, limit: int | None) -> list[dict]:
                 "title": _short(summary or first or "(no prompt)"),
                 "messages_seen": n,
                 "source": "claude_local",
+                "mode": mode, "native_source": native_source,
+                "mode_scope": "sdk_marker_in_scanned_transcript_prefix",
+                "session_type": "unknown", "provenance": "native_transcript",
                 **_saved_model(Path(f), 'claude'),
                 "resumable": bool(scwd and Path(scwd).is_dir()),
                 "storage_path": f,
+                "owner_uid": os.stat(f).st_uid,
             }
         )
         if limit is not None and len(out) >= limit:
@@ -487,12 +494,20 @@ def codex_sessions(cwd: str | None, limit: int | None) -> list[dict]:
     titles = {e.get("id"): e.get("thread_name") for e in _iter_jsonl(_codex_dir() / "session_index.jsonl")}
     for f in _codex_files():
         sid, scwd, first, parent_session_id = None, None, None, None
+        native_source, thread_source = None, None
         for e in _iter_jsonl(Path(f), max_lines=300):
             p = e.get("payload") or {}
             if e.get("type") == "session_meta":
+                native_source = p.get("source")
+                thread_source = p.get("thread_source")
                 sid = p.get("id") or sid
                 scwd = p.get("cwd") or scwd
                 parent_session_id = p.get("parent_thread_id") or parent_session_id
+                if not parent_session_id and isinstance(native_source, dict):
+                    subagent = native_source.get('subagent')
+                    spawn = subagent.get('thread_spawn') if isinstance(subagent, dict) else None
+                    if isinstance(spawn, dict):
+                        parent_session_id = spawn.get('parent_thread_id')
             if first is None:
                 for role, text in _codex_entry_messages(e, have_events=True):
                     if role == "user":
@@ -512,9 +527,17 @@ def codex_sessions(cwd: str | None, limit: int | None) -> list[dict]:
                 "updated": time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(f))),
                 "title": _short(titles.get(sid) or first or "(no prompt)"),
                 "source": "codex_local",
+                "native_source": native_source, "thread_source": thread_source,
+                "mode_scope": "native_session_origin",
+                "mode": ('noninteractive' if native_source == 'exec' else
+                         'interactive' if native_source in ('cli', 'vscode') else 'unknown'),
+                "session_type": 'subagent' if parent_session_id or (isinstance(native_source, dict) and 'subagent' in native_source) else
+                                'main' if thread_source == 'user' else 'unknown',
+                "provenance": "native_session_meta",
                 **_saved_model(Path(f), 'codex'),
                 "resumable": bool(scwd and Path(scwd).is_dir()),
                 "storage_path": f,
+                "owner_uid": os.stat(f).st_uid,
             }
         )
         if limit is not None and len(out) >= limit:
@@ -541,10 +564,13 @@ def cursor_sessions(cwd: str | None, limit: int | None) -> list[dict]:
             "updated": time.strftime("%Y-%m-%d %H:%M", time.localtime(db.stat().st_mtime)),
             "title": "(unreadable chat)",
             "source": "cursor_cli",
+            "mode": "unknown", "mode_scope": "unverifiable",
+            "session_type": "main", "provenance": "native_cli_store",
             "last_used_model": None,
             "model_source": None,
             "resumable": False,
             "storage_path": str(db),
+            "owner_uid": db.stat().st_uid,
         }
         try:
             with _cursor_store(db) as store:
