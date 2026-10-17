@@ -35,3 +35,10 @@ Native coding agents:
 - Agent permissions control native flags, not Linux identity. Agents run as the service user;
   full permission does not grant root by itself. Busy checks cover bridge-launched resumes only.
 - Relay the user's intent clearly; send further prompts only when requested or needed for an authorized goal.
+
+Remote administration:
+- ssh_hosts discovers static aliases offline. ssh_run and ssh_transfer require existing host-key trust.
+- Announce the remote alias and privileged task. Remote sudo is distinct from LOCAL sudo: it uses
+  remote sudo -n, never the bridge password. Report remote_privilege confirmation and outcome separately.
+- Transfers create one new regular file, never replace an existing destination. Inspect ambiguous
+  commit failures and staging_cleanup before retrying; dry-run never checks remote capabilities.

@@ -1,6 +1,6 @@
 # Tool reference
 
-The bridge exposes 17 MCP tools. `tools/list` is the authoritative parameter
+The bridge exposes 20 MCP tools. `tools/list` is the authoritative parameter
 schema; examples below describe defaults and limits. Read-only annotations are
 client hints, not authorization. The shared token can invoke mutating tools too.
 All paths and native agents use the service identity unless a tool requests sudo.
@@ -35,6 +35,52 @@ Atomic writes reject append, symlinks, hard links, ACLs/xattrs and special files
 `expected_sha256` is an optimistic check, not a lock against another editor.
 `backup=true` creates a private local copy; `mode=384` means 0600. Inspect errors
 and truncation details before assuming a read/write succeeded.
+
+## SSH administration
+
+| Tool | Parameters and behavior |
+|---|---|
+| `ssh_hosts(limit=30, offset=0)` | Offline literal alias discovery; safe source/client metadata, no addresses, users or identity paths. Page limit 100. |
+| `ssh_run(host, command, timeout=120, remote_sudo=false)` | Bounded remote shell command; stdout/stderr/exit, host alias and method `ssh`. |
+| `ssh_transfer(host, direction, local_path, remote_path, method="auto", timeout=120, dry_run=false)` | Upload/download one regular file. Methods: auto, rsync, sftp, scp. Offline dry-run never verifies remote capabilities. |
+
+Hosts must be discovered named aliases, not arbitrary addresses, user@host or
+option strings. Static user/system config and bounded global Includes are read;
+symlinked config files work. Wildcards/Match-only aliases are not listed. Match
+and conditional Includes are skipped; aliases that could depend on them or
+executable config directives are refused, rather than evaluated or guessed.
+Static ProxyJump is supported; ProxyCommand/LocalCommand/RemoteCommand are not.
+Offline `ssh -G` inspects the sanitized snapshot, never returns raw options.
+
+Connections require existing trusted host keys, batch authentication, no agent
+forwarding, no host-key updates and no shared control socket. No prompts or key
+seeding. Timeouts are clamped to 1–600 seconds across operation steps; output is
+bounded/redacted. SSH config-derived private metadata is masked best effort;
+remote command output itself remains sensitive.
+
+`remote_privilege` distinguishes sudo requested, invocation reached, and a remote
+root-shell receipt. Missing receipts mean unknown/unconfirmed, not proof nothing
+ran. Confirmation trusts the authenticated host and does not imply task success.
+Only remote `sudo -n` is used: no bridge password forwarding or LOCAL sudo.
+`local_service_euid` describes the transport process, not remote privilege.
+
+Auto prefers rsync when installed locally and found remotely, otherwise local
+SFTP then SCP. Missing remote subsystems can still fail; choose an explicit method
+rather than assuming availability. No blind fallback after transfer starts.
+Rsync uses protected arguments; SCP explicitly uses its legacy protocol with quoted
+remote operands. Streaming, recursive sync and overwrite/delete modes are absent.
+
+Use exact absolute remote file paths; local paths expand `~` and must be absolute.
+Control/undecodable characters, glob/bracket syntax, local symlinks and dot path
+components are refused. Parent directories must already exist. Uploads stage in
+a private sibling directory and commit using remote GNU `ln -T` (same filesystem);
+downloads stage locally and hard-link exclusively. Existing destinations are never
+replaced. Remote source leaf symlinks are refused; keep paths/files quiescent.
+`bytes`/`checksum` stay null without independent verification. `committed=null`
+means a lost commit reply: inspect before retrying. `staging_cleanup` reports
+upload cleanup; an unconfirmed cleanup can leave the reported private staging
+path. Cleanup removes only this operation's payload/directory, not user files.
+For long/custom workflows, use existing shell/jobs with native SSH deliberately.
 
 ## Privilege disclosure
 

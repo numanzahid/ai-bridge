@@ -128,7 +128,7 @@ class CoreHTTPTests(unittest.TestCase):
         self.assertIn('tell the user the task and target', initialized['instructions'])
         tools = self.rpc(base, 'tools/list', {})['tools']
         self.assertIn('run_command', {tool['name'] for tool in tools})
-        self.assertEqual(len(tools), 17)
+        self.assertEqual(len(tools), 20)
         result = self.tool(base, 'run_command', {'command': 'printf core-ok'})
         self.assertEqual(result['stdout'], 'core-ok')
         self.assertIn('agents', self.tool(base, 'system_info', {}))

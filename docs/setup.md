@@ -145,3 +145,16 @@ For editable MCP instructions/resources/prompts, see the
 [full uninstall procedure](operations.md#full-uninstall): it includes bridge
 instructions/state but retains accounts/homes, source clones, native history and
 shared tunnels. Always preview from a separate host terminal.
+
+## Remote SSH preparation
+
+Install the SSH client and desired transfer clients locally; authenticate as the
+bridge service account. Prepare named static aliases in that account's SSH config
+and pin host keys through a separate trusted terminal after verifying fingerprints.
+The adapter never accepts new keys automatically or modifies known_hosts. Batch
+key/agent authentication must already work; agent forwarding is disabled. Prefer
+static settings/ProxyJump over executable or conditional configuration. Confirm
+remote shell utilities and the selected transfer subsystem are available; uploads
+need GNU `ln -T`. Remote sudo must already work noninteractively with `sudo -n`;
+the bridge never stores or forwards remote passwords. Keep existing local sudo
+credentials separate. See [SSH tools](reference.md#ssh-administration) for limits.

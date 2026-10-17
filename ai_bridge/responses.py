@@ -3,7 +3,7 @@ import json
 
 
 def render(payload, limit, redact):
-    limit = max(1024 if isinstance(payload, dict) and 'privilege' in payload else 512, limit)
+    limit = max(1024 if isinstance(payload, dict) and ('privilege' in payload or 'remote_privilege' in payload) else 512, limit)
     if isinstance(payload, str):
         text = redact(payload)
         if len(text) <= limit:
@@ -47,11 +47,11 @@ def render(payload, limit, redact):
         if budget == 64:
             # Very large metadata shapes: preserve known control fields, never
             # splice serialized JSON. Normal tool schemas do not need this fallback.
-            keys = ('job_id','agent','status','outcome','session_id','exit_code','is_error','failure','error','next','next_offset','privilege','privilege_message')
+            keys = ('job_id','agent','status','outcome','session_id','exit_code','is_error','failure','error','next','next_offset','privilege','privilege_message','remote_privilege','remote_privilege_message','host','method','committed','staging_cleanup')
             result = {k: shrink(value[k],64,k) for k in keys if isinstance(value,dict) and k in value}
             result['truncation'] = {'truncated': True, 'metadata_omitted': True}
             if len(encode(result)) > limit:
                 result = {'error': 'Result metadata exceeds response limit.', 'truncation': {'truncated': True},
-                          **({k: value[k] for k in ('privilege', 'privilege_message') if k in value} if isinstance(value, dict) else {})}
+                          **({k: value[k] for k in ('privilege', 'privilege_message', 'remote_privilege', 'remote_privilege_message', 'host', 'method') if k in value} if isinstance(value, dict) else {})}
             return encode(result)
         budget = max(64, budget//2)

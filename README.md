@@ -13,7 +13,8 @@ No local model or bridge-specific AI API key is needed. The connected client
 supplies the AI. Native coding CLIs are optional and keep their own installation,
 authentication, settings, and conversation stores. Host administration works
 without them. Shared instructions and skills are discovered on demand; optional
-MCP resources and prompt templates are editable on the host.
+MCP resources and prompt templates are editable on the host. Three SSH tools add
+remote commands and file transfers through configured aliases with existing host-key trust.
 
 ```text
 MCP client → HTTPS + bridge token → tunnel → 127.0.0.1:8765
@@ -72,7 +73,7 @@ stay. Unknown ownership or unresolved jobs can block removal. See
 ## Documentation
 
 - [Setup](docs/setup.md): identity, credentials, HTTPS, client connection, settings.
-- [Reference](docs/reference.md): 17 tools, permissions, models and session continuity.
+- [Reference](docs/reference.md): 20 tools, permissions, models and session continuity.
 - [Operations](docs/operations.md): updates, rollback, recovery and full uninstall.
 - [Reliability](docs/system-hardening.md): logging, execution limits and verification.
 - [Host configuration](ai_bridge/host_defaults/README.md): MCP guidance, resources and prompts.

@@ -54,3 +54,13 @@ global journals and external backups remain. Remove only an individually verifie
 bridge tunnel route manually, never shared infrastructure. See
 [full uninstall](docs/operations.md#full-uninstall), [setup](docs/setup.md) and
 [reliability](docs/system-hardening.md) for procedures and limitations.
+
+## SSH trust
+
+SSH extends token access to configured accounts; config and the authenticated
+remote host must be trusted. Discovery is offline and hides routing/key metadata.
+Conditional/executable config is not evaluated. Existing host-key trust and batch
+mode are mandatory; no key seeding, agent forwarding or LOCAL sudo for access.
+Remote sudo receipts trust the host, not cryptographic attestation; no passwords
+are stored/forwarded. Transfers avoid replacement/deletion of existing destinations;
+inspect ambiguous commits/staging cleanup. Remote output may still contain secrets.

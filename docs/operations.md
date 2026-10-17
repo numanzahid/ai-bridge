@@ -42,7 +42,7 @@ the current request return before restarting; a detached host job can do that:
 sudo systemd-run --collect --on-active=3s /usr/bin/systemctl restart ai-bridge
 ```
 
-Verify authenticated initialization, all 17 tools, a harmless call, unauthorized
+Verify authenticated initialization, all 20 tools, a harmless call, unauthorized
 rejection and HTTPS reachability from the intended client. Health alone is not
 an MCP/authentication test. Refresh client metadata after updates. With explicit
 authorization, test sudo using a harmless identity command and inspect both
@@ -120,6 +120,18 @@ refresh it. Restart after changes. See [sudo mechanics](setup.md#sudo-credential
 | Adapter breaks after CLI update | Storage/output compatibility; core shell/file/job tools remain available. |
 | Old job is uncertain | Inspect identity/cleanup locally; never kill solely by a saved PID. |
 | Host configuration fails | Validate manifests with the [host guide](../ai_bridge/host_defaults/README.md); startup also checks tool names. |
+
+## SSH diagnostics
+
+Start with `ssh_hosts`; it is offline. Check static alias/config support and local
+client availability. From a trusted terminal as the service account, verify the
+pinned host key and batch authentication before a coordinated harmless `ssh_run`.
+Key rejection requires fingerprint review, never automatic key acceptance.
+Remote sudo failures require remote policy review, not the LOCAL bridge password.
+Transfer dry-run is also offline: it cannot establish remote rsync/SFTP/SCP support.
+Inspect selected method, phase, outcome, commit and staging cleanup. Never blindly
+retry an unconfirmed commit. Real aliases/remote transfers require separate live
+validation after deployment; regression tests use disposable files/fake binaries.
 
 ## Full uninstall
 

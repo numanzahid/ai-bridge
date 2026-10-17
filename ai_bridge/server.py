@@ -182,6 +182,60 @@ def list_skills(limit: int = 30, offset: int = 0) -> str:
     return _catalog_page("list_skills", catalog.skill_dirs(), "skills", limit, offset, skills=True)
 
 
+
+def _ssh_result(tool, args, operation):
+    from . import ssh_admin
+    try:
+        result = operation(ssh_admin)
+    except (OSError, ValueError) as error:
+        result = {'status': 'timed_out' if isinstance(error, TimeoutError) else 'unavailable',
+                  'stdout': '', 'stderr': '', 'exit_code': None, 'timed_out': isinstance(error, TimeoutError),
+                  'method': 'ssh' if tool == 'ssh_run' else (args.get('method') if args.get('method') != 'auto' else None),
+                  'error': str(error) if isinstance(error, ValueError) else 'SSH operation could not complete; inspect configuration/client availability locally.',
+                  'error_type': type(error).__name__, 'local_sudo_used': False,
+                  'remote_privilege': {'sudo_requested': args.get('remote_sudo', False),
+                                       'sudo_attempted': None, 'sudo_confirmed': False}}
+        if ssh_admin.ALIAS.fullmatch(args.get('host', '')):
+            result['host'] = args['host']
+    return _out(tool, args, result)
+
+
+@bridge_tool(annotations=RO)
+def ssh_hosts(limit: int = 30, offset: int = 0) -> str:
+    """Discover static configured SSH aliases offline; no addresses, users or key paths are returned.
+
+    Includes are bounded; Match-only and wildcard destinations are excluded. No host is contacted.
+    """
+    return _ssh_result('ssh_hosts', {'limit': limit, 'offset': offset},
+                       lambda adapter: adapter.hosts(limit, offset))
+
+
+@bridge_tool(annotations=RW)
+def ssh_run(host: str, command: str, timeout: int = 120, remote_sudo: bool = False) -> str:
+    """Run a bounded noninteractive command on a configured SSH alias with pinned existing host keys.
+
+    remote_sudo uses remote sudo -n only, never bridge/local sudo or forwarded passwords.
+    Announce remote task/target and report confirmation separately from command outcome.
+    """
+    args = {'host': host, 'timeout': timeout, 'remote_sudo': remote_sudo}
+    return _ssh_result('ssh_run', args, lambda adapter: adapter.run(CFG, host, command, timeout, remote_sudo))
+
+
+@bridge_tool(annotations=RW)
+def ssh_transfer(host: str, direction: Literal['upload', 'download'], local_path: str,
+                 remote_path: str, method: Literal['auto', 'rsync', 'sftp', 'scp'] = 'auto',
+                 timeout: int = 120, dry_run: bool = False) -> str:
+    """Transfer one regular file with exclusive destination creation, no overwrites or extra sudo.
+
+    Exact absolute paths, no directories, wildcards or recursive sync. Auto prefers available
+    remote/local rsync then local SFTP/SCP. Dry-run is offline; capability remains unverified.
+    Uploads use private staging and remote GNU ln -T; downloads commit with a local hard link.
+    Failed commits can be ambiguous; inspect before retrying. Existing files are never replaced.
+    """
+    args = {'host': host, 'direction': direction, 'method': method, 'dry_run': dry_run}
+    return _ssh_result('ssh_transfer', args, lambda adapter: adapter.transfer(
+        CFG, host, direction, local_path, remote_path, method, timeout, dry_run))
+
 @bridge_tool(annotations=RO)
 def system_info() -> str:
     """Basic facts about this machine: OS, user, uptime, disk, memory, sudo setup, installed agent CLIs."""

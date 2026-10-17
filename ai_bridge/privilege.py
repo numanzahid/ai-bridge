@@ -8,6 +8,9 @@ that the target ran. A root service is already root, even with sudo=false. Never
 passwords, tokens, or credential contents. Confirm high-risk destructive actions with the user.
 Agent permission settings control the agent, not Linux identity; agent processes run as the
 service user and full permission does not itself grant root access.
+For SSH, announce the remote alias/task and distinguish remote sudo from LOCAL sudo.
+Remote sudo uses sudo -n only, without forwarding stored passwords. Inspect remote_privilege:
+a request is not confirmation, and confirmed remote root launch is not command success.
 """
 
 
