@@ -6,7 +6,8 @@ operator procedures, not actions performed by reading this guide. Use
 
 ## Stage, select, then restart
 
-From the source folder, as the service user:
+From the source folder, as the installed service user (including root only if
+root mode was deliberately selected):
 
 ```bash
 bash install.sh --stage
@@ -56,6 +57,44 @@ Review journal errors privately and refresh client metadata after tool changes.
 The unit uses `KillMode=process` so detached jobs can survive a bridge restart.
 They continue using their originating release's code. Do not prune that release
 while its sidecars run. Stopping the service does not necessarily stop jobs.
+
+## Bootstrap ownership and privilege verification
+
+Root bootstrap copies public source to a private service-user-owned directory
+under `/var/lib/ai-bridge-bootstrap/`; it leaves the original checkout untouched.
+Use that copy or another reviewed checkout accessible to the same account for
+updates. Run staging with that account's HOME, not root's HOME for a dedicated
+service. Do not recursively change ownership of a checkout or copy native CLI
+credentials between accounts. Root-mode maintenance does not need the sudo
+binary; documentation commands prefixed with sudo may be run directly as root.
+The activation wrapper also handles root directly. Account creation is a fresh
+bootstrap operation; staging/activation/rollback never create accounts or change
+sudo passwords/policies.
+
+Before deployment, validate on a disposable Linux/systemd VM: interactive default
+and explicit root choices, a root-owned source tree, missing sudo handling,
+existing-user/password policy, failed authentication, interrupted provisioning,
+and restart/rollback as the selected account. Inspect unit User/Group, HOME,
+source/config ownership, and root-only credential permissions. Tests use fake
+commands and temporary files; they do not replace this real provisioning check.
+
+After a coordinated restart, verify authenticated tool discovery still exposes
+17 tools. With authorization, run a harmless ordinary identity command, then
+`run_command` with `sudo=true` and `id -u`; inspect both outcome and `privilege`.
+Test privileged file access in temporary paths, background job completion,
+job status/log/list disclosure, and empty target stdin under password and
+passwordless policies. Root services should report existing root execution,
+not successful sudo. Check a historical job remains readable with actual-use
+unknown. Never print credential contents to verify them. No live account,
+credential, service, or network changes are part of source regression tests.
+
+Rollback keeps the original staged semantics and existing state. New job
+privilege metadata is additive and runner JSON remains inside the private
+sidecar directory, so older root `*.json` readers still see only job records.
+Old releases will not provide the new disclosure fields; refresh clients after
+rollout or rollback. Retain releases used by running jobs. Changing service
+identity is a separate migration requiring ownership and credential review;
+bootstrap deliberately refuses to overwrite a different installed identity.
 
 ## Backups and rollback
 

@@ -16,6 +16,37 @@
 | `agent_sessions` | List past sessions on the machine (including ones you started by hand in the terminal) |
 | `agent_history` | Read a session: your prompts, agent replies, commands/edits it made |
 
+Privileged `run_command`, `start_job`, `read_file`, and `write_file` results
+include `privilege` plus `privilege_message`. Job status/list/log/cancel views
+inherit the **launch** disclosure; reading a job record does not itself use sudo.
+
+| Privilege field | Meaning |
+|---|---|
+| `sudo_requested` | Caller passed `sudo=true`; not evidence of execution |
+| `sudo_attempted` | Sudo subprocess was started; false if unavailable or service is already root |
+| `sudo_used` | Target creation was confirmed through sudo; inspect `effective_root` separately |
+| `target_started` | Target process creation was confirmed; not success of the task |
+| `service_euid` | Bridge process effective UID |
+| `effective_uid` / `effective_root` | Confirmed identity at target launch; null when unknown |
+| `method` | `sudo`, `service_user`, `service_root`, or historical `unknown` |
+
+Sudo denial leaves `target_started=false`, `sudo_used=false`, and launch identity
+unknown. A target that starts but fails can have `sudo_used=true` and nonzero
+`exit_code`. A root service bypasses sudo even when requested and reports root
+launch with `sudo_used=false`. Internal privilege changes within a shell/command
+are not traced; this records launch identity, not a sandbox or proof of every
+subcommand's UID. Historical sudo jobs retain null/unknown actual-use fields.
+Pending jobs can briefly report an unconfirmed launch; poll status for updates.
+
+Ordinary non-root results keep their existing shape. A privileged plain-text
+`read_file` result is wrapped as `{content, privilege, privilege_message}`;
+structured file results keep their existing keys with additive disclosure.
+Truncation retains disclosure, reserving at least 1024 characters when needed.
+Clients must announce the privileged task/target and report outcome separately,
+without exposing secrets. This instruction also supplements custom host server
+instructions; it adds no host-enforced approval prompt. Agent processes always
+use the service identity: `permission=full` does not grant Linux root.
+
 Agent limits and provider outages are returned as normal MCP tool results, not
 transport failures. `status` retains the job lifecycle (for example, `failed`
 for exit code 1); `outcome` distinguishes `running`, `succeeded`, `blocked`,

@@ -58,7 +58,13 @@ environment, installs dependencies, runs tests, creates configuration and a
 systemd service, and schedules startup. It can install missing Python venv
 support through the host package manager. It asks about storing a sudo password.
 On an existing install it only stages a tested release; activation and restart
-are separate. Run it as your normal service user from a host terminal.
+are separate. Non-root installation keeps using your current account. When root
+runs `bash install.sh` interactively, choose a dedicated `ai-bridge` account
+(recommended) or direct root execution (high risk). Dedicated bootstrap copies
+public source into an isolated workspace and offers password-authenticated sudo;
+it never grants blanket NOPASSWD. Root mode needs no sudo binary. Unattended
+root installation requires explicit `--run-as-root`; unattended dedicated-account
+bootstrap is refused. See [bootstrap choices](docs/setup.md#root-bootstrap-choices).
 
 The service defaults to loopback. Configure a public HTTPS tunnel and keep token
 authentication enabled before adding the endpoint to a client. Client account
@@ -68,7 +74,11 @@ and workspace policies determine whether remote MCP connectors are available.
 
 The optional stored credential uses systemd credentials and a private askpass
 helper. Read the [sudo credential mechanics](docs/setup.md#sudo-credentials) and
-trust limitations before enabling privileged tools.
+trust limitations before enabling privileged tools. Privileged command/file
+results and job views report requested/attempted sudo, confirmed target launch,
+and effective launch identity. Clients are instructed to announce the task,
+target, and outcome. A root service is already root even with `sudo=false`;
+agent `full` permission never changes the Linux user.
 
 ## Documentation
 

@@ -19,10 +19,10 @@ class SetupTests(unittest.TestCase):
 
     def test_sudo_probe_ignores_timestamp_and_tests_shell(self):
         source = Path('install.sh').read_text()
-        probe = next(line for line in source.splitlines() if line.startswith('if sudo -k -n'))
+        probe = next(line for line in source.splitlines() if line.startswith('elif sudo -k -n'))
         self.assertIn('-- bash -c true', probe)
         # Simulate cached auth that succeeds only when -k is absent.
-        script = 'sudo() { [[ " $* " != *" -k "* ]]; }; ' + probe.split(' && ')[0] + '; then exit 1; else exit 0; fi'
+        script = 'sudo() { [[ " $* " != *" -k "* ]]; }; ' + probe.replace('elif ', 'if ', 1).split(' && ')[0] + '; then exit 1; else exit 0; fi'
         self.assertEqual(subprocess.run(['bash', '-c', script]).returncode, 0)
 
     @patch.dict('os.environ', {}, clear=True)

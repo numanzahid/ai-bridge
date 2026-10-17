@@ -6,11 +6,11 @@ whose data and credentials you are willing to expose to the connected client.
 
 ## Install from a host terminal
 
-Requirements: Linux, systemd, Python 3.10+, sudo, and outbound access to install
-Python dependencies. Optional agent CLIs must be installed and authenticated as
+Requirements: Linux, systemd, Python 3.10+, and outbound access to install
+Python dependencies. Unprivileged installation additionally requires sudo. Optional agent CLIs must be installed and authenticated as
 the service user. No local model or bridge-specific AI API key is required.
 
-Review the source, then run as your normal user from the project folder:
+Review the source, then run from a host terminal in the project folder:
 
 ```bash
 bash install.sh
@@ -31,6 +31,64 @@ Existing installations only stage a tested release. Re-running does not change
 credentials, configuration, or the running service. See [operations](operations.md)
 for activation, restart, and rollback. The installer is an automated bootstrap;
 review its package-manager and privileged actions before running it.
+
+## Root bootstrap choices
+
+Interactive `bash install.sh` as root asks:
+
+1. **Dedicated account (default/recommended):** create `ai-bridge`, or reuse an
+   explicitly named normal account. Commands and agents run as that account.
+   Bootstrap requires `sudo`, `visudo`, `runuser`, `useradd`, and `chpasswd`.
+   If sudo is absent, it offers an explicit package install on apt/dnf hosts;
+   otherwise install missing host packages first. It refuses system/root accounts, unsafe homes, conflicting
+   sudo policy, and installations belonging to another identity. Existing account
+   passwords are never reset. New accounts get a password entered privately at
+   the terminal. Confirm the grant of `ALL=(root) PASSWD: ALL` explicitly. This
+   grants full root administration through authenticated sudo, not a restricted
+   command set. No NOPASSWD rule or Docker membership is added. Review other
+   native sudo policies separately; they can already grant passwordless access.
+2. **Direct root (explicit high risk):** the service and all commands/agents
+   already run as root. No non-root account, sudo binary, or sudo credential is
+   needed. `sudo=false` does not remove these privileges.
+
+To pick a different dedicated account interactively:
+
+```bash
+bash install.sh --dedicated-user bridge-admin
+```
+
+For deliberate automated **fresh root** installation only:
+
+```bash
+bash install.sh --run-as-root
+```
+
+Root without a terminal and without an explicit mode refuses a fresh install
+before staging or account/config changes. Dedicated bootstrap always requires a
+terminal, including with `--dedicated-user`; password collection is never from
+command-line arguments or an environment variable. Non-root users run without
+these mode flags and keep the original workflow. `--stage`, `--activate`, and
+`--rollback` remain separate operations, without a new bootstrap prompt.
+
+A root-owned checkout is never recursively re-owned. Bootstrap copies only public
+source/test/docs/dependency inputs into a new private directory under
+`/var/lib/ai-bridge-bootstrap/<user>-<unique>/`, then hands that copy to the service
+user and invokes the installer with a clean environment and attached terminal.
+Original source ownership is preserved. Existing copy directories are not
+replaced. Symlinked source/home paths and writable copy parents are refused.
+The service user's HOME contains its releases, state, host instructions and
+optional native CLI configuration; root's agent credentials are not copied.
+The user authenticates sudo during setup and may store the verified password in
+root-owned `/etc/ai-bridge/sudo.pass` (0600), delivered by systemd LoadCredential.
+Keep the password private and use a trusted terminal.
+
+An existing installation stages only; bootstrap will not replace another user's
+service/config. Run updates as the installed service identity. On partial failure,
+no fallback root installation is attempted. A newly created account, validated
+sudo policy, or private source copy can remain for diagnosis; inspect these
+before retrying. Bootstrap does not automatically delete accounts or data.
+Full Linux account/systemd/password provisioning still needs clean-VM validation;
+unit tests simulate these operations and do not change host accounts.
 
 ## Public HTTPS with bridge authentication
 

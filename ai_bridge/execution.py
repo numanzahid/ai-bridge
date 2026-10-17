@@ -1,7 +1,7 @@
 """Bounded Linux process execution and a separate sudo authentication channel."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -77,6 +77,9 @@ def sudo_command(cfg, argv: list[str], env: dict):
     password is stored on disk, in argv, or in the child's environment.
     """
     from .core import SudoUnavailable
+    if os.geteuid() == 0:
+        yield argv, env
+        return
     sudo = shutil.which('sudo')
     if not sudo:
         raise SudoUnavailable('sudo is not installed on this machine.')
@@ -164,17 +167,48 @@ class Capture:
 
 
 def execute(cfg, argv: list[str], cwd: str, timeout: float | None, sudo=False,
-            stdin_data=b'', on_output=None, cancel=None, on_start=None) -> dict:
+            stdin_data=b'', on_output=None, cancel=None, on_start=None, on_privilege=None) -> dict:
     from .core import child_env
     started = time.monotonic()
     captures = {'stdout': Capture(cfg.capture_bytes), 'stderr': Capture(cfg.capture_bytes)}
+    from .privilege import initial
+    privilege = initial(sudo)
+    disclose = sudo or os.geteuid() == 0
+    needs_sudo = sudo and os.geteuid() != 0
+    with (tempfile.TemporaryDirectory(prefix='aib-execution-') if needs_sudo else nullcontext(None)) as directory:
+        receipt = Path(directory)/'receipt' if directory else None
+        if receipt:
+            receipt.touch(mode=0o600)
+        wrapped = argv
+        if sudo and os.geteuid() != 0:
+            wrapped = [sys.executable, str(Path(__file__).with_name('privilege_exec.py')), str(receipt)] + argv
+        manager = sudo_command(cfg, wrapped, child_env()) if sudo else _plain(argv, child_env())
+        with manager as (command, env):
+            return _execute(command, env, cwd, timeout, stdin_data, on_output, cancel,
+                            on_start, on_privilege, privilege, disclose, receipt, started, captures)
+
+
+def _execute(command, env, cwd, timeout, stdin_data, on_output, cancel,
+             on_start, on_privilege, privilege, disclose, receipt, started, captures):
+    from .privilege import fields
     cleanup = None
-    timed_out = False
-    cancelled = False
-    manager = sudo_command(cfg, argv, child_env()) if sudo else _plain(argv, child_env())
-    with manager as (command, env):
+    timed_out = cancelled = False
+    def report():
+        if privilege['sudo_attempted']:
+            try:
+                privilege.update(json.loads(receipt.read_text()))
+                privilege['sudo_used'] = bool(privilege['target_started'])
+            except (OSError, ValueError):
+                pass
+        if disclose and on_privilege:
+            on_privilege(privilege.copy())
+    try:
         proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        privilege['sudo_attempted'] = privilege['method'] == 'sudo'
+        if not privilege['sudo_attempted']:
+            privilege.update(target_started=True, effective_uid=os.geteuid(), effective_root=os.geteuid() == 0)
+        report()
         if on_start:
             on_start(proc.pid, process_identity(proc.pid))
         selector = selectors.DefaultSelector()
@@ -191,6 +225,8 @@ def execute(cfg, argv: list[str], cwd: str, timeout: float | None, sudo=False,
         stop_deadline = None
         try:
             while selector.get_map():
+                if not privilege['target_started']:
+                    report()
                 now = time.monotonic()
                 if stop_deadline is None and ((timeout is not None and now-started >= timeout) or (cancel and cancel())):
                     timed_out = timeout is not None and now-started >= timeout
@@ -224,6 +260,8 @@ def execute(cfg, argv: list[str], cwd: str, timeout: float | None, sudo=False,
                             on_output(name, data)
             # Pipes may close while the process keeps running.
             while proc.poll() is None and stop_deadline is None:
+                if not privilege['target_started']:
+                    report()
                 if (timeout is not None and time.monotonic()-started >= timeout) or (cancel and cancel()):
                     timed_out = timeout is not None and time.monotonic()-started >= timeout
                     cancelled = not timed_out
@@ -239,6 +277,11 @@ def execute(cfg, argv: list[str], cwd: str, timeout: float | None, sudo=False,
                 proc.wait(timeout=.2)
             except subprocess.TimeoutExpired:
                 pass
+    except OSError as error:
+        report()
+        error.privilege = privilege.copy()
+        raise
+    report()
     result = {'exit_code': proc.poll(), 'timed_out': timed_out, 'cancelled': cancelled,
               'duration_s': round(time.monotonic()-started, 2)}
     for name, capture in captures.items():
@@ -246,11 +289,13 @@ def execute(cfg, argv: list[str], cwd: str, timeout: float | None, sudo=False,
         result[name+'_bytes'] = capture.total
         result[name+'_truncated'] = capture.total > len(capture.value())
     if cleanup is not None:
-        if sudo:
+        if privilege['sudo_attempted']:
             cleanup['original_group_complete'] = cleanup['complete']
             cleanup['complete'] = False
             cleanup['privileged_descendants'] = 'unverified; inspect locally before retrying'
         result['cleanup'] = cleanup
+    if disclose:
+        result.update(fields(privilege))
     return result
 
 

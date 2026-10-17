@@ -53,6 +53,7 @@ class CoreHTTPTests(unittest.TestCase):
             (root/'sudo-test.pass').write_text(PASSWORD)
             (root/'config/instructions').mkdir(parents=True)
             (root/'config/instructions/workspace.md').write_text('# Test workspace\n')
+            (root/'config/server-instructions.md').write_text('Custom host instructions for test.\n')
             codex = root/'codex/sessions/2026'
             codex.mkdir(parents=True)
             (codex/f'rollout-test-{SID}.jsonl').write_text(json.dumps({'type': 'session_meta', 'payload': {'id': SID, 'cwd': str(root)}}))
@@ -121,9 +122,13 @@ class CoreHTTPTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as error:
                 self.rpc(base, 'initialize', init, token=bad)
             self.assertEqual(error.exception.code, 404)
-        self.assertIn('serverInfo', self.rpc(base, 'initialize', init, path='/'+TOKEN+'/mcp', token=None))
+        initialized = self.rpc(base, 'initialize', init, path='/'+TOKEN+'/mcp', token=None)
+        self.assertIn('serverInfo', initialized)
+        self.assertIn('Custom host instructions for test.', initialized['instructions'])
+        self.assertIn('tell the user the task and target', initialized['instructions'])
         tools = self.rpc(base, 'tools/list', {})['tools']
         self.assertIn('run_command', {tool['name'] for tool in tools})
+        self.assertEqual(len(tools), 17)
         result = self.tool(base, 'run_command', {'command': 'printf core-ok'})
         self.assertEqual(result['stdout'], 'core-ok')
         self.assertIn('agents', self.tool(base, 'system_info', {}))

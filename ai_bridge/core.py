@@ -271,9 +271,17 @@ class Jobs:
         child = self._children.get(meta.get('id'))
         if child and child.poll() is not None:
             self._children.pop(meta['id'], None)
+        from .job_paths import readable_sidecar
+        process = readable_sidecar(self.dir, meta['id'], 'process')
+        if (meta.get('status') == 'running' or 'privilege' not in meta) and process.exists():
+            try:
+                state = json.loads(process.read_text())
+                if 'privilege' in state:
+                    meta['privilege'] = state['privilege']
+            except (OSError, ValueError):
+                pass
         if meta.get("status") != "running":
             return meta
-        from .job_paths import readable_sidecar
         outcome = readable_sidecar(self.dir, meta['id'], 'outcome')
         ef = self.exit_path(meta['id'])
         if outcome.exists():
@@ -281,6 +289,8 @@ class Jobs:
             meta['exit_code'] = result.get('exit_code')
             meta['ended'] = result.get('ended')
             meta['cleanup'] = result.get('cleanup')
+            if 'privilege' in result:
+                meta['privilege'] = result['privilege']
             if result.get('cleanup', {}).get('complete') is False:
                 meta['status'] = 'cleanup_incomplete'
             elif result.get('cancelled'):
@@ -359,7 +369,7 @@ class Jobs:
             meta.update(status='failed', ended=time.time(), exit_code=1)
             self.save(meta)
             raise
-        return meta
+        return self.load(job_id)
 
     def wait(self, job_id: str, wait_seconds: float) -> dict:
         deadline = time.time() + max(0.0, wait_seconds)

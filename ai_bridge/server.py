@@ -40,6 +40,8 @@ from .core import (
     OPERATION_ID,
 )
 
+from .privilege import CLIENT_INSTRUCTIONS, fields as privilege_fields, initial as privilege_initial, job_fields
+
 CFG = Config.load()
 REDACT = Redactor([CFG.token] + ([CFG.sudo_password] if CFG.sudo_password else []))
 JOBS = Jobs(CFG)
@@ -47,7 +49,7 @@ AGENT_START_LOCK = threading.Lock()
 WAIT_SLOTS = threading.BoundedSemaphore(8)
 
 HOST_CONFIG = HostConfig()
-INSTRUCTIONS = REDACT(HOST_CONFIG.instructions)
+INSTRUCTIONS = REDACT(HOST_CONFIG.instructions + "\n" + CLIENT_INSTRUCTIONS)
 
 mcp = MCPServer(name="ai-bridge", instructions=INSTRUCTIONS, version="1.0.0")
 
@@ -75,7 +77,13 @@ def bridge_tool(**options):
                       duration_s=round(time.monotonic()-started,3))
                 return result
             except (OSError, ValueError, KeyError) as error:
-                result = _out(fn.__name__, {}, {'error': str(error), 'outcome': 'unavailable', 'automatic_retry': False})
+                payload = {'error': str(error), 'outcome': 'unavailable', 'automatic_retry': False}
+                if fn.__name__ in ('run_command', 'start_job', 'read_file', 'write_file'):
+                    import inspect
+                    requested = inspect.signature(fn).bind_partial(*args, **kwargs).arguments.get('sudo', False)
+                    if requested or os.geteuid() == 0:
+                        payload.update(privilege_fields(getattr(error, 'privilege', privilege_initial(requested))))
+                result = _out(fn.__name__, {}, payload)
                 audit(CFG, REDACT, fn.__name__, {}, phase='finish', exception=True,
                       duration_s=round(time.monotonic()-started,3))
                 return result
@@ -128,6 +136,7 @@ def _job_view(meta: dict, tail_lines: int = 60) -> dict:
         "ended": _fmt_time(meta.get("ended")),
         "runtime_s": round((meta.get("ended") or time.time()) - meta["started"], 1),
     }
+    view.update(job_fields(meta))
     if tail_lines:
         view["output_tail"] = JOBS.tail(meta["id"], tail_lines)
     return view
@@ -190,7 +199,9 @@ def system_info() -> str:
         "sudo_note": 'Configuration only; no elevation probe was run.',
         "limits": {'capture_bytes': CFG.capture_bytes, 'job_log_bytes': CFG.job_log_bytes,
                    'retention_days': CFG.retention_days, 'response_chars': CFG.max_output_chars},
-        "sudo": "password configured" if CFG.sudo_password else ("NOPASSWD only" if shutil.which("sudo") else "not installed"),
+        "service_euid": os.geteuid(),
+        "effective_root": os.geteuid() == 0,
+        "sudo": "already root; sudo unnecessary" if os.geteuid() == 0 else ("password configured" if CFG.sudo_password else ("NOPASSWD only" if shutil.which("sudo") else "not installed")),
     }
     try:
         release = platform.freedesktop_os_release()
@@ -225,7 +236,7 @@ def run_command(command: str, cwd: str | None = None, timeout: int = 120, sudo: 
     try:
         r = run_sync(CFG, command, cwd, timeout, sudo)
     except (FileNotFoundError, SudoUnavailable) as e:
-        return _out("run_command", args, {"error": str(e)})
+        return _out("run_command", args, {"error": str(e), **privilege_fields(getattr(e, "privilege", privilege_initial(sudo)))})
     if sudo and r["exit_code"] != 0 and "password" in r["stderr"].lower() and not CFG.sudo_password:
         r["hint"] = "No sudo password is configured and sudo needs one. See README: Sudo setup."
     if r["timed_out"]:
@@ -243,7 +254,7 @@ def start_job(command: str, cwd: str | None = None, sudo: bool = False) -> str:
     try:
         meta = JOBS.start(["bash", "-lc", command], resolve_cwd(CFG, cwd), sudo=sudo, display=command)
     except (FileNotFoundError, SudoUnavailable) as e:
-        return _out("start_job", args, {"error": str(e)})
+        return _out("start_job", args, {"error": str(e), **privilege_fields(getattr(e, "privilege", privilege_initial(sudo)))})
     return _out("start_job", args, _job_view(meta, tail_lines=0))
 
 
@@ -274,6 +285,7 @@ def list_jobs(limit: int = 20) -> str:
             "session_id": m.get("session_id"),
             "command": (m.get("display") or "")[:120],
             "started": _fmt_time(m.get("started")),
+            **job_fields(m),
         }
         for m in JOBS.list(limit=min(limit, 100))
     ]
@@ -298,10 +310,13 @@ def job_log(job_id: str, offset_bytes: int = 0, max_bytes: int = 12000,
     Pass the returned generation on subsequent pages; a changed snapshot asks you to restart.
     Truncated logs retain the head and tail, not the omitted middle. No command is executed.
     """
+    disclosure = {}
     try:
+        disclosure = job_fields(JOBS.load(job_id))
         result = JOBS.log_chunk(job_id, offset_bytes, max_bytes, generation)
     except (OSError, ValueError, KeyError) as error:
         result = {'error': str(error)}
+    result.update(disclosure)
     return _out('job_log', {'job_id': job_id, 'offset_bytes': offset_bytes}, result)
 
 
@@ -311,12 +326,19 @@ def _file_operation(request: dict, sudo: bool):
                      str(Path.home()), 30, sudo, json.dumps(request).encode())
     if result['timed_out'] or result['stdout_truncated'] or result['exit_code'] != 0:
         return {'error': 'File operation failed, timed out, or exceeded the result capture limit.',
-                'exit_code': result['exit_code'], 'stderr': result['stderr'], 'cleanup': result.get('cleanup')}
+                'exit_code': result['exit_code'], 'stderr': result['stderr'], 'cleanup': result.get('cleanup'),
+                **privilege_fields(result.get('privilege'))}
     try:
         value = json.loads(result['stdout'])
     except ValueError:
-        return {'error': 'File helper did not return a valid result.', 'stderr': result['stderr']}
-    return value.get('result', value)
+        return {'error': 'File helper did not return a valid result.', 'stderr': result['stderr'],
+                **privilege_fields(result.get('privilege'))}
+    value = value.get('result', value)
+    if 'privilege' in result:
+        if not isinstance(value, dict):
+            value = {'content': value}
+        value.update(privilege_fields(result['privilege']))
+    return value
 
 
 @bridge_tool(annotations=RO)
@@ -333,7 +355,7 @@ def read_file(path: str, start_line: int = 1, max_lines: int = 400, sudo: bool =
             'start_line': start_line, 'max_lines': max_lines,
             'max_bytes': max(4096, CFG.capture_bytes//4), 'include_hash': include_hash}, sudo)
     except (OSError, SudoUnavailable, ValueError) as error:
-        result = {'error': str(error)}
+        result = {'error': str(error), **privilege_fields(getattr(error, 'privilege', privilege_initial(sudo)))}
     return _out('read_file', args, result)
 
 
@@ -354,7 +376,7 @@ def write_file(path: str, content: str, append: bool = False, sudo: bool = False
             'content': content, 'append': append, 'make_dirs': make_dirs, 'atomic': atomic,
             'expected_sha256': expected_sha256, 'backup': backup, 'mode': mode}, sudo)
     except (OSError, SudoUnavailable, ValueError) as error:
-        result = {'error': str(error)}
+        result = {'error': str(error), **privilege_fields(getattr(error, 'privilege', privilege_initial(sudo)))}
     return _out('write_file', args, result)
 
 
@@ -524,6 +546,7 @@ def agent_wait(job_id: str, wait_seconds: int = 60, progress_lines: int = 15) ->
         "wait_deferred": meta.get("wait_deferred", False),
         "recent_activity": parsed["progress"][-max(1, min(progress_lines, 100)) :],
     }
+    view.update(job_fields(meta))
     if mismatch:
         view.update(is_error=True, outcome='failed', requested_session_id=meta["requested_session_id"],
                     returned_session_id=parsed["session_id"],

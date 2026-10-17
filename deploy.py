@@ -119,7 +119,7 @@ def stage(root, source, python=sys.executable, builder=build_environment, tester
         validation.mkdir()
         shutil.copytree(source/'tests',validation/'tests',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         (validation/'ai_bridge').symlink_to(release/'app/ai_bridge', target_is_directory=True)
-        for name in ('install.sh','merge_env.py','requirements.txt','requirements.lock','deploy.py'):
+        for name in ('install.sh', 'bootstrap.py', 'merge_env.py','requirements.txt','requirements.lock','deploy.py'):
             shutil.copy2(source/name,validation/name)
         builder(release,source,python)
         tester(release,source)

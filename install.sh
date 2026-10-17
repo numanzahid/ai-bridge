@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AI Bridge installer. Run as your normal user (not root) from the project folder:
+# AI Bridge installer. Run from the project folder:
 #   bash install.sh
 # Existing installations stage a tested release only. Activation/restart is explicit.
 # --stage | --activate RELEASE | --rollback [RELEASE]
@@ -17,6 +17,11 @@ PORT="${AI_BRIDGE_PORT:-8765}"
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Root can manage its own install without a sudo binary.
+if [ "$(id -u)" -eq 0 ]; then
+  sudo() { if [ "${1:-}" = -v ]; then return 0; fi; "$@"; }
+fi
 
 # Staging needs no sudo and never changes the active application or service.
 if [ "${1:-}" = "--stage" ]; then
@@ -63,7 +68,18 @@ UNITPY
   echo "For restart through MCP, use a detached systemd job after the request returns."
   exit 0
 fi
-[ "$#" -eq 0 ] || die "Usage: bash install.sh [--stage | --activate RELEASE | --rollback [RELEASE]]"
+MODE="${1:-}"
+case "$MODE" in
+  ""|--run-as-root) [ "$#" -le 1 ] || die "Unexpected arguments." ;;
+  --dedicated-user) [ "$#" -le 2 ] || die "Use --dedicated-user [NAME]." ;;
+  *) die "Usage: bash install.sh [--dedicated-user [NAME] | --run-as-root | --stage | --activate RELEASE | --rollback [RELEASE]]" ;;
+esac
+if [ "$(id -u)" -ne 0 ] && [ -n "$MODE" ]; then
+  die "Root mode flags require root. Run without flags for the existing non-root workflow."
+fi
+if [ "$MODE" = --dedicated-user ]; then
+  exec python3 "$SRC_DIR/bootstrap.py" --source "$SRC_DIR" --dedicated-user "${2:-ai-bridge}"
+fi
 if [ -d "$DATA_DIR/app" ] || [ -L "$DATA_DIR/current" ]; then
   say "Existing installation: staging only. Its active listener is left running." >&2
   RELEASE="$(python3 "$SRC_DIR/deploy.py" stage --root "$DATA_DIR" --source "$SRC_DIR")"
@@ -72,8 +88,26 @@ if [ -d "$DATA_DIR/app" ] || [ -L "$DATA_DIR/current" ]; then
   exit 0
 fi
 
-[ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not root. It will ask for sudo when needed."
-command -v sudo >/dev/null || die "sudo is required."
+if [ "$(id -u)" -eq 0 ] && [ "$MODE" != --run-as-root ]; then
+  [ -t 0 ] && [ -t 1 ] || die "Root installation requires a terminal choice, or explicit --run-as-root. No installation was started."
+  echo "1) Dedicated unprivileged ai-bridge account (recommended); authenticated sudo for root tasks."
+  echo "2) Run directly as root (HIGH RISK): every command and agent already has root access."
+  read -r -p "Install mode [1]: " CHOICE
+  case "${CHOICE:-1}" in
+    1) exec python3 "$SRC_DIR/bootstrap.py" --source "$SRC_DIR" ;;
+    2) MODE=--run-as-root ;;
+    *) die "Invalid choice. No installation was started." ;;
+  esac
+fi
+if [ "$(id -u)" -ne 0 ]; then
+  command -v sudo >/dev/null || die "sudo is required for unprivileged installs."
+else
+  say "HIGH RISK: service, ordinary commands and agents will run directly as root."
+fi
+# Fresh bootstrap must never overwrite another identity's existing installation.
+if [ -e "$UNIT_FILE" ] || [ -e "$ENV_FILE" ]; then
+  die "Existing service/config found without this user's installation. Use its owner and the staged deployment workflow; refusing to overwrite."
+fi
 command -v systemctl >/dev/null || die "systemd is required."
 command -v python3 >/dev/null || die "python3 is required (3.10+)."
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' || die "Python 3.10+ required."
@@ -81,7 +115,7 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' || die
 # Warn before expensive preparation; a busy port does not prevent installation.
 PORT_STATE="$(python3 "$SRC_DIR/deploy.py" check-port --port "$PORT" --warn-only)"
 
-say "Checking sudo access"
+say "Checking installation privileges"
 sudo -v
 
 say "Installing Python venv support if missing"
@@ -178,7 +212,9 @@ PY
 
 say "Sudo password for AI commands"
 CRED_LINE="# LoadCredential=sudo_pass:$PASS_FILE"
-if sudo -k -n -- bash -c true 2>/dev/null && ! sudo test -f "$PASS_FILE"; then
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Root service: sudo is unnecessary; no sudo password will be stored or loaded."
+elif sudo -k -n -- bash -c true 2>/dev/null && ! sudo test -f "$PASS_FILE"; then
   echo "Your user already has passwordless sudo. Nothing to store."
 else
   if sudo test -f "$PASS_FILE"; then
@@ -218,7 +254,7 @@ say "Installing systemd service"
 TMP_UNIT="$(mktemp)"
 cat > "$TMP_UNIT" <<EOF
 [Unit]
-Description=AI Bridge MCP server (shell + coding agents for Claude/ChatGPT)
+Description=AI Bridge MCP server (shell and optional coding agents)
 After=network-online.target
 Wants=network-online.target
 

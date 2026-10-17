@@ -128,14 +128,22 @@ def main():
     cancelled = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: cancelled.set())
     signal.signal(signal.SIGINT, lambda *_: cancelled.set())
+    process_state = {}
+    def privilege_changed(value):
+        if process_state.get('privilege') != value:
+            process_state['privilege'] = value
+            private_json(sidecar_path(root, job_id, 'process'), process_state)
     def started(pid, identity):
-        private_json(sidecar_path(root, job_id, 'process'), {'pid': pid, 'identity': identity})
+        process_state.update(pid=pid, identity=identity)
+        private_json(sidecar_path(root, job_id, 'process'), process_state)
     try:
         result = execute(cfg, payload['argv'], payload['cwd'], None, payload['sudo'],
-                         on_output=recorder.add, cancel=cancelled.is_set, on_start=started)
+                         on_output=recorder.add, cancel=cancelled.is_set, on_start=started, on_privilege=privilege_changed)
     except Exception as error:
         recorder.add('stderr', ('Job startup/execution failed: '+str(error)+'\n').encode())
-        result = {'exit_code': 1, 'error': str(error), 'cancelled': cancelled.is_set()}
+        from .privilege import initial, fields
+        result = {'exit_code': 1, 'error': str(error), 'cancelled': cancelled.is_set(),
+                  **fields(getattr(error, 'privilege', initial(payload['sudo'])))}
     finally:
         cfg.sudo_password = None
     recorder.flush(final=True)

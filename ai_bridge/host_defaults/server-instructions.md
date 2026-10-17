@@ -35,3 +35,11 @@ Coding agents (claude = Claude Code, codex = OpenAI Codex, cursor = Cursor CLI):
   terminal/editor is actively using it; busy detection covers bridge-launched turns only.
 - Relay the user's intent to the agent clearly. Do not send follow-up prompts unless the user asked you to,
   or the user gave you a goal that clearly needs them.
+
+Privilege disclosure:
+- Before privileged operations, tell the user the task and target requiring root access.
+- Report the outcome and privilege metadata afterward. Requested or attempted sudo does not
+  prove that the target ran. A root service is already root even with sudo=false.
+- Never reveal passwords, tokens, or credential contents. Confirm high-risk destructive actions.
+- Agent permission settings do not change Linux identity. Agents run as the service user;
+  full permission does not itself grant root access.
