@@ -45,3 +45,18 @@ independently review that history and all proposed artifacts for disclosures.
 
 See [setup](docs/setup.md), [operations](docs/operations.md), and
 [security and reliability](docs/system-hardening.md) for generic host procedures.
+
+## Safe removal boundary
+
+Full uninstall is permanent and must run from a trusted host terminal, not the
+MCP connection being stopped. Preview the manifest before typed confirmation.
+It checks the installed identity, ownership, path traversal, effective unit,
+job state and process groups; it never signals a stored job PID. Unknown/custom
+ownership or unresolved jobs require manual review rather than force deletion.
+New installs keep a root-private ownership record for dedicated alternate paths.
+The removal is not transactional; keep the host quiescent, preserve the printed
+manifest and inspect partial failures. Fully detached processes cannot always
+be attributed from historical records. Accounts/homes, native agent data,
+unrelated source, shared network/tunnel configuration, system journals and
+external backups remain. Remove only an individually verified bridge tunnel
+route manually; never reset shared infrastructure as part of uninstall.

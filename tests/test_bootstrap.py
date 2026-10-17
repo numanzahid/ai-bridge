@@ -234,6 +234,7 @@ class BootstrapTests(unittest.TestCase):
             'python3': '#!/bin/sh\nif [ "$2" = "check-port" ]; then echo available; exit 0; fi\n'
                        'if [ "$2" = "stage" ]; then echo '+shlex.quote(str(release))+'; exit 0; fi\n'
                        'if [ "$2" = "activate" ]; then exit 0; fi\n'
+                       'if [ "$2" = "--record-install" ]; then exit 0; fi\n'
                        'if [ "$2" = "import ensurepip" ]; then exit 0; fi\n'
                        'if [ "$1" = "-m" ]; then exit 0; fi\n'
                        'exec '+shlex.quote(sys.executable)+' "$@"\n',

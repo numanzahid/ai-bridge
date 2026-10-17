@@ -193,13 +193,105 @@ from provider logs or backups, and does not terminate already running commands.
 | Old job remains uncertain | Inspect its process and cleanup report locally; do not kill a PID based only on stale metadata. |
 | Configuration fails startup | Validate host manifests and tool override names; see [reference](reference.md). |
 
-## Uninstall
+## Full uninstall
 
-`bash uninstall.sh` stops/disables the service and deletes the installed app,
-configuration, and stored sudo password. It retains job state by default;
-`--purge` deletes that state too. These are destructive procedures: back up first,
-inspect running jobs, and turn off the public tunnel separately. Host guidance
-and agent histories are not removed by the script.
+Run from a **trusted host terminal**, never through the bridge being removed.
+Stopping the service disconnects every connected MCP client. Back up anything
+needed first, including shared instructions and job records. Preview with either
+entry point:
+
+```bash
+bash install.sh --uninstall --dry-run
+# Equivalent:
+bash uninstall.sh --dry-run
+```
+
+The preview prints the service account/UID from the installed systemd unit and
+passwd entry, exact directory/file targets (directories include all contents),
+activation links, empty-container cleanup, retained items, job blockers and a
+manifest SHA256. Caller HOME and arbitrary caller directory environment variables
+are ignored. Configuration values are read from the root-owned environment file;
+credential values are never displayed. Non-root callers use sudo; noninteractive
+sudo uses `-n` and fails rather than hanging for a password.
+
+After reviewing the manifest, run `bash install.sh --uninstall` or
+`bash uninstall.sh` and type the exact `UNINSTALL AI-BRIDGE for <installed-user>`
+phrase shown by the command. Deletion is permanent. The old `--purge` option is
+accepted as a deprecated alias: **full removal now always includes state and host
+configuration**, including all bridge instructions/resources/prompts/overrides.
+There is no implicit partial uninstall or state-preserving default.
+
+The removal covers:
+
+- The recognized `ai-bridge.service`, its activation links, exclusively marked
+  bridge drop-ins, and `ai-bridge.service.before-versioned` backup. Unknown
+  lifecycle actions, effective identities, fragments or drop-ins require manual
+  review before the service is touched.
+- `/etc/ai-bridge`, including environment and stored sudo credential, plus the
+  exact installer-created password-authenticated sudo policy if present.
+- The installed account's legacy/versioned `~/.local/share/ai-bridge`, recognized
+  `~/.local/state/ai-bridge` jobs/audit/logs, and `~/.config/ai-bridge` guidance.
+- Recognized source copies under `/var/lib/ai-bridge-bootstrap/<installed-user>-*`.
+  Copies for other accounts stay. Empty managed containers are removed only when
+  empty. The private uninstall ownership record is removed last.
+
+New fresh installations write root-private ownership metadata at
+`/var/lib/ai-bridge/installation.json` when paths can be registered safely.
+Registration failures warn without breaking installation; unsupported paths need
+manual ownership review later. Alternate config/state/XDG directories are
+included only when they match that record's exact path, inode and owner. Only
+separate directories named `ai-bridge` are automatically registered; a shared
+home, source repository, native CLI directory, or other unverified custom
+location is never recursively deleted. Existing installations without ownership
+records retain this conservative behavior: an unverified alternate path blocks
+automatic removal and must be reviewed/cleaned manually. Recognized default
+bridge directories are checked even when an alternate location is configured.
+
+When the unit is absent, the ownership record can recover the identity. For
+reviewed legacy remnants with neither unit nor record, supply `--user <account>`
+explicitly and preview again. Missing/unrecognized identity, unsafe ownership,
+symlinked target/parent paths, mounted subtrees, changed targets, or unresolved
+job metadata cause refusal. Internal symlinks are unlinked without following
+their targets. Directory removal uses descriptor-relative, symlink-resistant
+operations and rechecks the plan immediately before stopping/deleting. This is
+not a filesystem transaction or a lock against all unrelated writers: keep the
+host quiescent and inspect partial-failure messages locally.
+
+Running/uncertain jobs, active bridge runners and recorded live process groups
+block removal. The uninstaller never sends signals to stored PIDs or force-kills
+jobs, and requires the known service to use `KillMode=process`. Finish or manage
+application jobs deliberately before retrying. Detached processes that changed
+identity/group or lost their records cannot be exhaustively attributed; inspect
+them locally. The script does not reconcile or discard uncertain job records
+for you. If removal fails after stopping, it reports that files were retained or
+which targets were already removed; the service can remain stopped. Keep the
+printed manifest and fix the reported problem before another dry-run.
+
+For deliberate automation from a trusted host terminal, all three flags are
+required and must match a **fresh** preview:
+
+```bash
+bash uninstall.sh --yes \
+  --confirm 'UNINSTALL AI-BRIDGE for <installed-user>' \
+  --manifest-sha256 '<SHA256-from-current-dry-run>'
+```
+
+`--yes` alone is refused. Invocation from the bridge service cgroup/environment
+is refused even with automation flags. Use a separate trusted terminal, not an
+MCP call or a detached bridge request.
+
+Accounts, primary groups and their homes are **always retained**: older bootstrap
+versions have no trustworthy installer-created account marker, so there is no
+blanket `userdel` option. Review any retained account separately using normal
+host administration. Native coding CLIs and their histories/authentication,
+unrelated projects/source clones (including the checkout used to run uninstall),
+containers, package dependencies, system-wide journals and operator backup
+archives are retained. Review/delete an unwanted source clone or archive
+manually only after confirming its contents and exact path.
+
+Tunnel cleanup is manual. Remove only the bridge's route/backend from your tunnel
+configuration; never globally reset a shared tunnel. No tunnel, firewall, SSH,
+networking or unrelated system service is changed by uninstall.
 
 See the [security and reliability guide](system-hardening.md) for logging,
 retention, and emergency containment limits.

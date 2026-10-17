@@ -80,6 +80,17 @@ and effective launch identity. Clients are instructed to announce the task,
 target, and outcome. A root service is already root even with `sudo=false`;
 agent `full` permission never changes the Linux user.
 
+## Uninstall
+
+From a trusted host terminal, preview `bash install.sh --uninstall --dry-run`,
+then run `bash install.sh --uninstall` and type the displayed confirmation.
+`bash uninstall.sh` is equivalent. Full removal includes bridge instructions,
+resources, prompts, job logs, installed releases, service and stored credential.
+It blocks on unresolved jobs; native agents/history, accounts/homes, unrelated
+source clones and shared tunnels stay. See [full uninstall](docs/operations.md#full-uninstall)
+for ownership checks, alternate paths and deliberate automation. Never remove the
+bridge through its own MCP connection.
+
 ## Documentation
 
 - [Setup](docs/setup.md): installation, HTTPS tunnels, connectors, credentials, and configuration.

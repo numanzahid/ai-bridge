@@ -204,3 +204,14 @@ Host manifests, tool descriptions, instructions, resources and prompts are cover
 in the [reference](reference.md) and [host configuration guide](../ai_bridge/host_defaults/README.md).
 Restart for environment or metadata changes; instruction/resource/prompt body edits
 are read on demand. Agent storage honors `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
+
+## Removing the installation
+
+Use `bash install.sh --uninstall --dry-run` from a separate trusted host terminal
+before full removal. `bash uninstall.sh` uses the same planner. The service
+identity comes from its unit and passwd entry, so running as root or a different
+sudo user does not target that caller's HOME. Fresh installs record directory
+ownership privately for later verification of dedicated alternate config/state
+paths. No account/home or native CLI history is automatically deleted. Read
+[full uninstall](operations.md#full-uninstall) for typed confirmation, job safety,
+the changed `--purge` meaning, retained artifacts and manual tunnel cleanup.

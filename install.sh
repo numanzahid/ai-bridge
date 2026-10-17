@@ -8,6 +8,11 @@ set -euo pipefail
 APP_USER="$(id -un)"
 APP_HOME="$HOME"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Dispatch removal before installation, staging, or privilege bootstrap.
+if [ "${1:-}" = --uninstall ]; then
+  shift
+  exec bash "$SRC_DIR/uninstall.sh" "$@"
+fi
 DATA_DIR="$APP_HOME/.local/share/ai-bridge"
 ETC_DIR="/etc/ai-bridge"
 ENV_FILE="$ETC_DIR/ai-bridge.env"
@@ -72,7 +77,7 @@ MODE="${1:-}"
 case "$MODE" in
   ""|--run-as-root) [ "$#" -le 1 ] || die "Unexpected arguments." ;;
   --dedicated-user) [ "$#" -le 2 ] || die "Use --dedicated-user [NAME]." ;;
-  *) die "Usage: bash install.sh [--dedicated-user [NAME] | --run-as-root | --stage | --activate RELEASE | --rollback [RELEASE]]" ;;
+  *) die "Usage: bash install.sh [--uninstall [OPTIONS] | --dedicated-user [NAME] | --run-as-root | --stage | --activate RELEASE | --rollback [RELEASE]]" ;;
 esac
 if [ "$(id -u)" -ne 0 ] && [ -n "$MODE" ]; then
   die "Root mode flags require root. Run without flags for the existing non-root workflow."
@@ -197,9 +202,12 @@ from ai_bridge.host_config import HostConfig, initialize
 
 for line in Path(sys.argv[1]).read_text().splitlines():
     key, separator, value = line.partition('=')
-    if separator and key.strip() in ('AI_BRIDGE_CONFIG_DIR', 'XDG_CONFIG_HOME'):
+    if separator and key.strip() in ('AI_BRIDGE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'AI_BRIDGE_STATE_DIR'):
         os.environ[key.strip()] = value.strip().strip('"').strip("'")
 initialize()
+state = Path(os.environ.get('AI_BRIDGE_STATE_DIR') or Path.home()/'.local/state/ai-bridge')
+state.mkdir(mode=0o700, parents=True, exist_ok=True)
+(state/'jobs').mkdir(mode=0o700, exist_ok=True)
 host = HostConfig()
 guide = host.root / 'instructions/README.md'
 try:
@@ -209,6 +217,11 @@ except FileExistsError:
     pass
 print(f"Host configuration ready: {host.root}")
 PY
+
+say "Recording private uninstall ownership metadata"
+if ! sudo python3 "$SRC_DIR/uninstall.py" --record-install "$APP_USER"; then
+  echo "WARNING: ownership registration failed. Installation will continue; unverified custom paths will require manual uninstall review." >&2
+fi
 
 say "Sudo password for AI commands"
 CRED_LINE="# LoadCredential=sudo_pass:$PASS_FILE"
