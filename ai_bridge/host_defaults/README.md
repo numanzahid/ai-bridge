@@ -1,135 +1,120 @@
-# AI Bridge host configuration
+# Host configuration
 
-Edit these files locally before starting or restarting AI Bridge.
-The installer creates defaults only for files that do not already exist.
+Default root: `~/.config/ai-bridge/`. `AI_BRIDGE_CONFIG_DIR` overrides it;
+otherwise `XDG_CONFIG_HOME` is honored. The installer creates missing defaults,
+including example resource/prompt manifests, without overwriting existing files.
 
-| File/folder | MCP surface | When contents are used |
+## Choose the right surface
+
+| File | MCP surface / purpose | Apply edits |
 |---|---|---|
-| server-instructions.md | initialize result: instructions | At server startup, sent during connection |
-| tool-descriptions/TOOL_NAME.md | tools/list: description | At server startup, sent during tool discovery |
-| resources.json | resources/list metadata | Definitions registered at startup |
-| resources/ | Files referenced by resources.json | Contents read on resources/read |
-| prompts.json | prompts/list metadata and arguments | Definitions registered at startup |
-| prompts/ | Files referenced by prompts.json | Contents rendered on prompts/get |
-| instructions/ | list_instructions and read_file tools | Discovered/read on demand |
+| `server-instructions.md` | `InitializeResult.instructions`: brief connection guidance | Restart and reconnect |
+| `tool-descriptions/TOOL_NAME.md` | `Tool.description` in `tools/list` | Restart and refresh metadata |
+| `instructions/*.md` or `*.txt` (subfolders allowed) | Optional workspace guidance via `list_instructions` → `read_file` | Next discovery/read |
+| `resources.json` | Definitions for `resources/list` | Restart and refresh metadata |
+| Registered resource files | UTF-8 text returned by `resources/read` | Next read |
+| `prompts.json` | Definitions/arguments for `prompts/list` | Restart and refresh metadata |
+| Registered prompt files | Messages rendered by `prompts/get` | Next retrieval |
 
-## Which instructions belong where?
+Keep connection guidance short: discover relevant documents, use jobs for long
+commands, preserve session IDs and report privilege use. A custom file replaces
+the packaged guidance, **but the server always appends privilege-disclosure
+instructions**, even when the file is empty. Missing files use packaged guidance.
+These instructions guide clients; they do not enforce permissions or override
+the client's own instruction hierarchy.
 
-| What you want to describe | Put it in | Example content |
-|---|---|---|
-| Brief rules for operating the bridge in every connected conversation | server-instructions.md | Discover workspace instructions before working; use background jobs for long commands; preserve session IDs when continuing chats |
-| How to use one existing tool correctly | tool-descriptions/TOOL_NAME.md | agent_sessions.md explains pagination and grouping subagent records under parent_session_id |
-| Where projects live and where new projects should be created | instructions/projects.md | Your actual project root, naming convention, and how to check for an existing project |
-| Where resources, source documents, and generated files belong | instructions/documents.md | Reference-material directories, output directories, and temporary-file conventions |
-| Your working preferences | instructions/preferences.md | Git operations only when requested, preferred package manager, and use of Trash for deletion |
-| Guidance for a particular area of work | instructions/deployment.md or instructions/team/frontend.md | Your deployment workflow, service locations, or frontend conventions |
-| A named reference document a client can explicitly retrieve through MCP | resources/FILE.md, registered in resources.json | A workspace map, architecture overview, glossary, or operating guide |
-| A reusable request the user/client selects and fills in | prompts/FILE.md, registered in prompts.json | Review a project, plan a deployment, or summarize a selected chat |
+Use the exact existing tool name for an override, such as `run_command.md`.
+The whole file replaces its description, so retain necessary usage details.
+Parameters, behavior and annotations stay defined by code. Missing overrides use
+built-in descriptions; empty overrides and unknown tool names fail startup.
 
-The suggested instruction filenames are conventions; choose your own names and
-subfolders. Use your actual paths and preferences rather than the example names.
+## Optional workspace documents and skills
 
-### Connection-level instructions: server-instructions.md
+Put project locations in `instructions/projects.md`, document/resource locations
+in `instructions/documents.md`, and working preferences in
+`instructions/preferences.md`. Names are conventions; choose useful topics and
+subfolders. Keep project-specific rules with their project and reference them
+rather than copying every rule into connection guidance.
 
-Keep this file short because it is sent during connection initialization. Put
-general operating guidance here and point to optional documents for detail.
-For example:
-
-```text
-When first working on this machine, discover shared documents with list_instructions.
-Read documents relevant to the task before choosing project or output locations.
-For long commands, start a background job and check its status.
-When continuing an existing coding-agent chat, reuse its exact session ID.
-```
-
-This file replaces all default server instructions, so retain any default guidance
-you still want. The client decides how to use it; it does not become an enforced
-filesystem policy or override the client's own instruction hierarchy.
-
-### Tool-specific instructions: tool-descriptions/TOOL_NAME.md
-
-Use the exact existing tool name as the filename, such as run_command.md,
-agent_sessions.md, or read_file.md. The whole file becomes that tool's description.
-Describe its purpose, when to use it, and important parameter or result details.
-For example, agent_sessions.md might explain that the result is paginated and
-that a recorded parent_session_id identifies activity belonging under another chat.
-
-An override replaces the original description rather than appending to it. Include
-the original usage details you still need. Editing this file changes guidance only;
-the tool's actual parameters, execution behavior, and permissions are defined in code.
-
-### Optional workspace documents: instructions/
-
-Use separate documents for separate topics so the AI can select relevant files.
-A clear heading is enough; optional frontmatter adds a description to the catalog:
+A heading is sufficient; optional frontmatter improves catalog descriptions:
 
 ```markdown
 ---
 title: Project locations
-description: Where to find projects and where to create new ones.
+description: Where to find projects and create new ones.
 ---
-
 # Project locations
-
-Describe your actual directories and project naming rules here.
+Describe your actual directories and conventions here.
 ```
 
-list_instructions returns names, descriptions, and paths. The AI then calls
-read_file for selected documents. Their bodies are not sent at connection or
-included in the catalog. Edits are visible on the next discovery/read call.
-Project-specific rules can remain in the project's own instruction files; shared
-documents can explain where those live.
-
-### Reference content versus reusable requests
-
-A resource normally contains facts or reference material, such as a workspace map.
-A prompt normally contains a task request with optional placeholders, such as
-"Review {{project}} and focus on {{focus}}." Register them using the formats below.
-These are separate from connection instructions and are retrieved only when used.
-
-You can register an instruction document as a resource without duplicating it:
-set a resource's path to instructions/projects.md in resources.json. It remains
-available through list_instructions/read_file and also through resources/read.
-Skill discovery remains separate: list_skills locates existing SKILL.md files,
-and read_file loads selected skills and any needed referenced documents.
+`list_instructions` returns names, short descriptions and paths, not bodies.
+Read selected files with `read_file`. `list_skills` separately discovers existing
+`SKILL.md` files for on-demand reading. Discovery does not install skills or
+supply tools another client may require. Clients choose what to retrieve.
 
 ## Resources
 
-resources.json is a JSON array. Each entry requires uri, name, and path. Optional
-fields are title, description, and mime_type. URIs must be absolute static URIs,
-such as ai-bridge://documents/workspace. Files must contain UTF-8 text.
+`resources.json` is an array. Required fields: `uri`, `name`, `path`.
+Optional: `title`, `description`, `mime_type`. Use absolute static URIs and UTF-8
+files. Paths are relative to the host root unless absolute or prefixed with `~`.
+Only registered files are published; `[]` or a missing manifest publishes none.
 
-Paths are relative to this configuration folder unless absolute or prefixed with ~.
-Only listed files are exposed; adding a file to resources/ does not publish it.
-Use [] in resources.json to expose no resources.
+```json
+[
+  {
+    "uri": "ai-bridge://documents/project-layout",
+    "name": "project-layout",
+    "description": "Where projects and documents belong.",
+    "mime_type": "text/markdown",
+    "path": "instructions/projects.md"
+  }
+]
+```
+
+A resource is reference content. It may reuse an instruction file, as above;
+putting an unregistered file in `resources/` alone does not expose it through MCP.
 
 ## Prompts
 
-prompts.json is a JSON array. Each entry requires name and a nonempty messages array.
-Optional fields are title, description, and arguments. Each message has a path and
-a role (user or assistant; defaults to user). Each argument has a name, an optional
-description, and required (defaults to false).
+`prompts.json` is an array. Each entry requires `name` and nonempty `messages`;
+`title`, `description` and `arguments` are optional. Messages require `path` and
+may set `role` to `user` (default) or `assistant`. Arguments require `name` and
+may set `description` and `required` (default false).
 
-Use {{argument_name}} in the message files. Names must begin with a letter or
-underscore and contain only letters, digits, and underscores. All placeholders
-must be declared in the manifest. Missing optional arguments become empty text;
-missing required arguments, unknown supplied arguments, and undeclared placeholders
-produce errors. This is plain text substitution, with no code execution or expressions.
-Use [] in prompts.json to expose no prompts.
+```json
+[
+  {
+    "name": "review-project",
+    "description": "Review a selected project.",
+    "arguments": [{"name": "project", "required": true}],
+    "messages": [{"role": "user", "path": "prompts/review-project.md"}]
+  }
+]
+```
 
-## Applying changes
+The message file could contain `Review {{project}} using its local instructions.`
+Templates return one or more messages. Argument names start with a letter or
+underscore, followed by letters/digits/underscores. Declare all placeholders;
+missing optional values become empty text. Missing required arguments, unknown
+supplied arguments or undeclared placeholders produce retrieval errors.
+Substitution is plain text, never code evaluation. `[]` or a missing manifest
+publishes no prompts. Retrieval is `prompts/get`, not `prompts/read`.
 
-Restart after editing server-instructions.md, tool descriptions, or manifests.
-Edits to existing resource/prompt body files and instruction documents are read
-on the next request. Clients may cache metadata and require a refresh/reconnection.
-MCP prompt retrieval is prompts/get; there is no prompts/read operation.
+## Initialize and validate
 
-If server-instructions.md is absent, built-in guidance is used. An existing file
-fully replaces it (including an intentionally empty file). Missing tool overrides
-keep built-in descriptions; unknown tool names and empty overrides are rejected.
-Missing manifests register no entries. Invalid manifests, duplicate identifiers,
-unsupported fields, and missing referenced files fail startup with a configuration
-error rather than silently publishing an incomplete catalog.
+Run as the service account, using its HOME and the same host-root environment
+settings as the service. From an installed versioned environment:
 
-Creating these files does not enforce AI behavior or install skills in a client.
-Clients control when to use instructions, resources, and prompts.
+```bash
+PYTHONPATH="$HOME/.local/share/ai-bridge/current/app" \
+  ~/.local/share/ai-bridge/current/venv/bin/python -m ai_bridge.host_config --init
+PYTHONPATH="$HOME/.local/share/ai-bridge/current/app" \
+  ~/.local/share/ai-bridge/current/venv/bin/python -m ai_bridge.host_config --check
+```
+
+`--init` fills missing files; `--check` validates manifests, supported fields,
+duplicate identifiers and referenced paths. Full startup also checks tool names.
+Prompt placeholders are checked at retrieval. Invalid definitions fail rather
+than silently publishing an incomplete catalog. Restart separately for metadata
+changes; clients may also need to refresh/reconnect. Existing body-file edits are
+read on demand. See the bundled [overview](resources/bridge-guide.md).

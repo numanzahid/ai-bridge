@@ -1,330 +1,186 @@
-# Tool and configuration reference
+# Tool reference
 
-| Tool | What it does |
+The bridge exposes 17 MCP tools. `tools/list` is the authoritative parameter
+schema; examples below describe defaults and limits. Read-only annotations are
+client hints, not authorization. The shared token can invoke mutating tools too.
+All paths and native agents use the service identity unless a tool requests sudo.
+
+## Shell, files and jobs
+
+| Tool | Parameters and behavior |
 |---|---|
-| `system_info` | OS, user, disk, memory, sudo status, installed agents |
-| `run_command` | Run bash (timeout up to 600s). `sudo=true` for root |
-| `start_job` / `job_status` / `list_jobs` / `kill_job` | Long-running commands in the background |
-| `read_file` / `write_file` | Bounded text reads / write or append; opt-in atomic/hash/backup options. Both support `sudo=true` |
-| `job_log` | Read retained job output in bounded chunks with snapshot generation checks |
-| `list_instructions` | Discover shared instruction documents; read selected files with `read_file` |
-| `list_skills` | Discover local skill names, descriptions, and paths; read selected skills with `read_file` |
-| `agent_list` | Which of claude / codex / cursor are installed |
-| `agent_models` | On-demand model catalog with source/freshness: live Cursor CLI, cached Codex metadata, or unavailable |
-| `agent_send` | Start a turn: agent, prompt, cwd, optional `session_id` to resume, `permission`, `model` |
-| `agent_wait` | Poll a turn. Returns progress while running, final answer + `session_id` when done |
-| `agent_sessions` | List past sessions on the machine (including ones you started by hand in the terminal) |
-| `agent_history` | Read a session: your prompts, agent replies, commands/edits it made |
+| `system_info()` | OS, user/effective UID, resource summaries, configured sudo status and installed agents. No elevation probe. |
+| `run_command(command, cwd=null, timeout=120, sudo=false)` | Login Bash, no TTY. Timeout clamped to 1–600 seconds. Returns stdout/stderr, exit/timeout and capture details. |
+| `start_job(command, cwd=null, sudo=false)` | Detached long-running command; returns `job_id` and launch status. |
+| `job_status(job_id, wait_seconds=0, tail_lines=60)` | Wait up to 110 seconds; tail up to 400 lines. Inspect status, exit and cleanup. |
+| `list_jobs(limit=20)` | Recent command/agent jobs, at most 100. |
+| `kill_job(job_id)` | Attempts SIGTERM then SIGKILL with identity checks. Inspect cleanup; privileges can prevent termination. |
+| `job_log(job_id, offset_bytes=0, max_bytes=12000, generation=null)` | Bounded retained-output chunk, capped at 65536 bytes. Follow `next_offset_bytes` with the returned generation. |
+| `read_file(path, start_line=1, max_lines=400, sudo=false, include_hash=false)` | Bounded regular text read; `max_lines` capped at 3000. Optional SHA256 scans the whole file. |
+| `write_file(path, content, append=false, sudo=false, make_dirs=true, atomic=false, expected_sha256=null, backup=false, mode=null)` | Direct write by default; optional atomic replacement, stale-content check, private backup and integer permission bits. |
 
-Privileged `run_command`, `start_job`, `read_file`, and `write_file` results
-include `privilege` plus `privilege_message`. Job status/list/log/cancel views
-inherit the **launch** disclosure; reading a job record does not itself use sudo.
+Use `start_job` for long work, then poll `job_status`; shell/file tools do not
+need any coding CLI. Missing `cwd` uses the configured default directory.
+Jobs can outlive a bridge restart and use their originating release's code;
+retain that release until they finish. Status can include `running`, `done`,
+`failed`, `killed`, `lost` or `cleanup_incomplete`. Legacy identity may be unknown.
+No cancellation or rollback undoes completed file changes.
 
-| Privilege field | Meaning |
+Output is bounded, not an archival transcript. Job logs retain head/tail bytes
+when truncated; the middle is unavailable. Log offsets refer to retained bytes.
+If generation changes during paging, restart at offset 0. Busy waits may return
+`wait_deferred=true`; poll again instead of assuming completion.
+
+Atomic writes reject append, symlinks, hard links, ACLs/xattrs and special files.
+`expected_sha256` is an optimistic check, not a lock against another editor.
+`backup=true` creates a private local copy; `mode=384` means 0600. Inspect errors
+and truncation details before assuming a read/write succeeded.
+
+## Privilege disclosure
+
+`run_command`, `start_job`, `read_file` and `write_file` disclose requested sudo
+or existing root execution through `privilege` and `privilege_message`. Job
+status/list/log/cancel and normal agent result views inherit launch metadata;
+reading a record does not itself escalate.
+
+| Field | Meaning |
 |---|---|
-| `sudo_requested` | Caller passed `sudo=true`; not evidence of execution |
-| `sudo_attempted` | Sudo subprocess was started; false if unavailable or service is already root |
-| `sudo_used` | Target creation was confirmed through sudo; inspect `effective_root` separately |
-| `target_started` | Target process creation was confirmed; not success of the task |
-| `service_euid` | Bridge process effective UID |
-| `effective_uid` / `effective_root` | Confirmed identity at target launch; null when unknown |
-| `method` | `sudo`, `service_user`, `service_root`, or historical `unknown` |
+| `sudo_requested` | Caller requested sudo; not evidence of execution. |
+| `sudo_attempted` | Sudo subprocess started; false if unavailable or already root. |
+| `sudo_used` | Target creation confirmed through sudo; root identity is separate. |
+| `target_started` | Launch confirmed, not success of the user's task. |
+| `service_euid` | Effective UID of the executing bridge/runner. |
+| `effective_uid`, `effective_root` | Confirmed launch identity; null if unknown. |
+| `method` | Usually `sudo` or `service_root`; historical records may be `unknown`. |
 
-Sudo denial leaves `target_started=false`, `sudo_used=false`, and launch identity
-unknown. A target that starts but fails can have `sudo_used=true` and nonzero
-`exit_code`. A root service bypasses sudo even when requested and reports root
-launch with `sudo_used=false`. Internal privilege changes within a shell/command
-are not traced; this records launch identity, not a sandbox or proof of every
-subcommand's UID. Historical sudo jobs retain null/unknown actual-use fields.
-Pending jobs can briefly report an unconfirmed launch; poll status for updates.
+Denied sudo reports no confirmed target launch/use and unknown effective identity.
+A command can launch through sudo and still fail. A root service bypasses sudo,
+reports existing root launch, and leaves `sudo_used=false`, even if requested.
+Historical sudo jobs retain null actual-use fields; pending jobs may be unconfirmed.
+Internal privilege changes within shell subcommands are not traced.
 
-Ordinary non-root results keep their existing shape. A privileged plain-text
-`read_file` result is wrapped as `{content, privilege, privilege_message}`;
-structured file results keep their existing keys with additive disclosure.
-Truncation retains disclosure, reserving at least 1024 characters when needed.
-Clients must announce the privileged task/target and report outcome separately,
-without exposing secrets. This instruction also supplements custom host server
-instructions; it adds no host-enforced approval prompt. Agent processes always
-use the service identity: `permission=full` does not grant Linux root.
+Ordinary non-root results keep their shape. A privileged plain-text file read is
+wrapped as `{content, privilege, privilege_message}`; structured results keep
+existing keys with added disclosure. Truncation preserves disclosure, reserving
+at least 1024 characters for such dictionary responses when needed.
 
-Agent limits and provider outages are returned as normal MCP tool results, not
-transport failures. `status` retains the job lifecycle (for example, `failed`
-for exit code 1); `outcome` distinguishes `running`, `succeeded`, `blocked`,
-`failed`, or `interrupted`. Recognized errors include `failure.scope="agent"`
-and `failure.code` values `usage_limit`, `rate_limit`, `authentication_required`,
-`service_unavailable`, or `execution_failed` when the cause is unknown.
-Interrupted jobs use `interrupted`; an unavailable parser reports adapter scope
-with outcome `unavailable`. Classification is best-effort from error diagnostics,
-not a live account-quota check. The response includes guidance and preserves the
-known session ID. No automatic retries, model switches, or replacement chats occur.
+Clients are instructed to announce the privileged task/target and report outcome
+separately, without secrets. This guidance supplements custom server instructions;
+it does not add a host-enforced approval prompt. Agent `full` permission never
+changes the Linux user; a root service's agents already have root identity.
 
-The defaults, bounds, and result details below supplement this overview.
+## Instructions and skills
 
-### Shared instructions and skills
+| Tool | Parameters and behavior |
+|---|---|
+| `list_instructions(limit=30, offset=0)` | Discover host instruction names, descriptions and paths. |
+| `list_skills(limit=30, offset=0)` | Discover existing `SKILL.md` files, not install or execute them. |
 
-Put as many Markdown (`.md`) or text (`.txt`) instruction files as you need in
-`~/.config/ai-bridge/instructions/`. Subfolders work too. The installer creates this
-folder with a starter README; it uses `$XDG_CONFIG_HOME/ai-bridge/instructions/`
-if `XDG_CONFIG_HOME` is set. For example, use `projects.md` for project locations,
-`documents.md` for resource/document storage, and `preferences.md` for working rules.
+Both return `next_offset`; page limits are capped at 100 and response budgets can
+reduce a page. The instruction root is `<host-config>/instructions/`, honoring
+`AI_BRIDGE_CONFIG_DIR`, then XDG/home defaults. Markdown/text files and subfolders
+are supported. A heading is sufficient; optional title/description frontmatter
+improves discovery. Read relevant bodies with `read_file`, not every document.
+See the [shared instruction guide](instructions-guide.md).
 
-Give each file a clear heading. Optional frontmatter supplies a short catalog description:
+Default skill roots are `~/.codex/skills`, `~/.claude/skills`, `~/.cursor/skills`,
+and `~/.agents/skills`; the first honors `CODEX_HOME`. Override them with
+colon-separated `AI_BRIDGE_SKILL_DIRS`. Discovery follows linked directories,
+avoids duplicate files/cycles, and reads a short prefix for catalog metadata.
+It does not supply client-specific tools a listed skill might require.
 
-```markdown
----
-title: Project locations
-description: Where to find existing projects and create new ones.
----
+Connection guidance and tool metadata are separate from these optional documents.
+Instruction/skill bodies are loaded only on demand; edits appear on subsequent
+calls. Clients decide what to read. Named MCP resources and reusable prompts are
+also supported: `resources/list` → `resources/read`, `prompts/list` → `prompts/get`.
+See [host configuration](../ai_bridge/host_defaults/README.md) for all file formats,
+examples, refresh rules and validation. There is no `prompts/read` method.
 
-# Project locations
+## Native agents
 
-Add your actual folder locations and conventions here.
-```
+Adapters: `claude`, `codex`, `cursor`. Each CLI keeps ownership of authentication,
+settings and native chats. Missing CLIs or unavailable parsers do not disable
+host shell/file/job tools. CLI output/storage formats can change independently.
 
-**Contents are loaded on demand.** Connecting sends brief bridge guidance and tool
-descriptions, not your instruction files or skills. The assistant calls
-`list_instructions` or `list_skills` to get names, short descriptions, and absolute
-paths, then uses `read_file` for relevant documents. Listings are paginated with
-`next_offset`. Discovery reads only a short file prefix for metadata and headings;
-it does not return document bodies. New files and edits appear on the next call,
-without reinstalling or restarting the bridge. Each client decides when to call
-tools; server guidance does not enforce automatic reading.
+| Tool | Parameters and behavior |
+|---|---|
+| `agent_list()` | Installation/discovery and configured permission information. |
+| `agent_models(agent, limit=30, offset=0)` | On-demand live/cached/unavailable model catalog; page limit up to 100. |
+| `agent_send(agent, prompt, cwd=null, session_id=null, permission=null, model=null, wait_seconds=30)` | Start a turn; wait up to 110 seconds. Omit session ID for a new chat. Default permission comes from config (`edit`). |
+| `agent_wait(job_id, wait_seconds=60, progress_lines=15)` | Poll a turn up to 110 seconds; recent activity capped at 100 lines. Returns lifecycle, outcome, result and known session ID. |
+| `agent_sessions(agent, cwd=null, limit=15, offset=0)` | Saved local chats, newest first; optional project filter, page limit up to 100. |
+| `agent_history(agent, session_id, last_n=30, include_tools=true, max_chars_per_message=2000, offset=0)` | Read stored conversation without a model turn. Up to 300 entries and 10000 chars/message; overall response budget may reduce the page. |
 
-Skill discovery finds `SKILL.md` recursively in `~/.codex/skills/`,
-`~/.claude/skills/`, `~/.cursor/skills/`, and `~/.agents/skills/` (Codex honors
-`CODEX_HOME`). It follows linked skill directories and avoids duplicate files and
-symlink cycles. Override the roots with `AI_BRIDGE_SKILL_DIRS`, using colons to
-separate directories in `/etc/ai-bridge/ai-bridge.env`, then restart the service.
-Listing a skill does not execute it, install it in the connected client, or provide
-any client-specific tools it requires. The assistant can read referenced scripts
-and documents relative to the selected skill's directory as needed.
+### Continue an existing chat
 
-### Host-editable MCP configuration
+1. Call `agent_sessions`, filtering by project if useful; follow `next_offset`.
+   Rows contain full IDs, project paths, titles, storage/model metadata and resume
+   eligibility. The list includes chats started outside the bridge.
+2. Call `agent_history` with the exact ID to summarize saved history. Its offset
+   pages backward from the end. `include_tools=false` focuses on conversation text.
+3. Call `agent_send` with the same ID. Omit `cwd` to use the saved project. Unknown
+   or partial IDs, conflicting/missing projects and unavailable state cause errors,
+   not a replacement chat.
+4. Poll `agent_wait` while `status=running`; then inspect outcome and continuity.
+   `confirmed` means the CLI reported the requested ID, `mismatch` is an error,
+   and `unverified` means no confirming ID was reported. A new turn without a
+   returned ID is not proof of a resumable chat.
 
-All the supported MCP guidance surfaces can be configured with local files before
-starting the server. The default root is `~/.config/ai-bridge/`; `XDG_CONFIG_HOME`
-is honored, and `AI_BRIDGE_CONFIG_DIR` can explicitly select another root.
+Codex `parent_session_id` identifies recorded subagent activity. A null parent
+only means none was recorded: tests/automated executions can also lack parents.
+Cursor supports local CLI chats, not editor/cloud stores. Subagent stores are
+excluded; history may include compaction summaries rather than discarded turns.
+Moved/mismatched project stores can be readable but non-resumable. The bridge
+performs no native history migration, import or synchronization.
 
-```text
-~/.config/ai-bridge/
-  server-instructions.md
-  tool-descriptions/
-    run_command.md             # optional override for an existing tool
-  instructions/               # workspace documents discovered on demand
-  resources.json
-  resources/
-    bridge-guide.md
-  prompts.json
-  prompts/
-    workspace-task.md
-```
+Do not resume the same chat concurrently from an editor/terminal. Busy checks
+serialize bridge-launched resumes, not all external activity. Preserve session
+IDs in follow-ups; omitting one requests a new chat.
 
-| Host file | Standard MCP field or operation | Changes take effect |
-|---|---|---|
-| `server-instructions.md` | `InitializeResult.instructions` | After restart and client initialization |
-| `tool-descriptions/<tool_name>.md` | `Tool.description` in `tools/list` | After restart and client metadata refresh |
-| `resources.json` | Metadata for `resources/list` | After restart and client metadata refresh |
-| Registered resource files | Text returned by `resources/read` | On the next read |
-| `prompts.json` | Metadata and arguments for `prompts/list` | After restart and client metadata refresh |
-| Registered prompt message files | Messages returned by `prompts/get` | On the next retrieval |
+### Permission flags
 
-The whole `server-instructions.md` file replaces built-in connection guidance. If
-it is absent, the packaged defaults are used; an existing empty file intentionally
-provides no server instructions. A tool-description file replaces only the named
-tool's description, keeping its implementation, parameters, and annotations.
-Absent tool overrides use the built-in descriptions. The installer preserves edits;
-delete an override file and restart if you want to return to its packaged default.
-
-Register UTF-8 text resources explicitly in `resources.json`, a JSON array:
-
-```json
-[
-  {
-    "uri": "ai-bridge://documents/project-layout",
-    "name": "project-layout",
-    "title": "Project layout",
-    "description": "Where to find projects and documents.",
-    "mime_type": "text/markdown",
-    "path": "resources/project-layout.md"
-  }
-]
-```
-
-The required fields are `uri`, `name`, and `path`. Other shown fields are optional.
-URIs must be absolute static URIs. Paths are relative to the host configuration root,
-or may be absolute or start with `~`. Only registered files become MCP resources;
-putting a file in `resources/` alone does not publish it. Use `[]` to publish none.
-
-Register prompt templates in `prompts.json`, also a JSON array:
-
-```json
-[
-  {
-    "name": "review-project",
-    "description": "Review a selected project.",
-    "arguments": [
-      {"name": "project", "description": "Project directory", "required": true}
-    ],
-    "messages": [{"role": "user", "path": "prompts/review-project.md"}]
-  }
-]
-```
-
-The referenced Markdown file can contain `Review {{project}} using its local
-instructions.` The manifest requires `name` and a nonempty `messages` array;
-`title`, `description`, and `arguments` are optional. Each message requires `path`,
-and its role is `user` (default) or `assistant`. Templates can return multiple
-messages. Arguments have a name, optional description, and `required` flag
-(default `false`). Placeholders use `{{argument_name}}`, with letter/underscore
-names containing letters, digits, or underscores. Missing optional values become
-empty text. Substitution treats values as plain text and never evaluates code.
-Missing required arguments, unknown supplied arguments, or undeclared placeholders
-produce retrieval errors. Use `[]` in `prompts.json` to publish no prompts.
-The protocol method is **`prompts/get`**, not `prompts/read`.
-
-Initialize missing defaults or validate configuration using the installed environment:
-
-```bash
-PYTHONPATH="$HOME/.local/share/ai-bridge/current/app" \
-  ~/.local/share/ai-bridge/current/venv/bin/python -m ai_bridge.host_config --init
-PYTHONPATH="$HOME/.local/share/ai-bridge/current/app" \
-  ~/.local/share/ai-bridge/current/venv/bin/python -m ai_bridge.host_config --check
-sudo systemctl restart ai-bridge
-```
-
-`--init` preserves existing files. `--check` validates manifest syntax, supported
-fields, duplicate identifiers, and referenced file paths; full server startup also
-checks tool override names. An invalid definition fails validation/startup rather
-than silently publishing an incomplete catalog. Prompt placeholders are checked
-when the prompt is requested. The installed host `README.md` documents these formats.
-
-Connecting exposes server guidance and available metadata, while resource and prompt
-bodies remain on demand. Clients decide whether to use MCP resources and prompts;
-support varies by client, and cached metadata may need a refresh/reconnection.
-The existing `list_instructions`, `list_skills`, and `read_file` tools remain available.
-
-### Agent permission levels
-
-| permission | Claude Code | Codex | Cursor |
+| Permission | claude | codex | cursor |
 |---|---|---|---|
 | `readonly` | `--permission-mode plan` | `--sandbox read-only` | `--mode ask` |
-| `edit` (default) | `--permission-mode acceptEdits` | `--sandbox workspace-write` with approvals disabled | `--force` |
+| `edit` (default) | `--permission-mode acceptEdits` | `--sandbox workspace-write` | `--force` |
 | `full` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--force` |
 
-Codex resumes support all three permission levels. Sandbox options are passed to `codex exec` before its `resume` subcommand. Both Codex `readonly` and `edit` disable interactive approvals.
+Codex readonly/edit disable interactive approvals; sandbox options precede its
+resume subcommand. These are native flags, not bridge-enforced host restrictions.
+Cursor edit/full have the same effective force setting. Extra operator arguments
+can affect native behavior; inspect the deployed CLI and configuration.
 
-Change the default with `AI_BRIDGE_AGENT_DEFAULT_PERMISSION` in the env file, or just tell the assistant "use full permission" per task. Note `edit` mode may block some commands the agent wants to run (for example installs or network access in Codex); the result will say so.
+### Models
 
-### Model information and selection
+Session/history metadata exposes `last_used_model` and `model_source`, or null.
+Codex reads recorded turn selection, claude assistant-message model, and cursor
+saved `lastUsedModel`. JSONL lookup is bounded to the latest 2 MB. These are
+historical values/settings, not guaranteed active or next-turn models. Aliases
+stay unresolved; unsupported or missing data remains unknown.
 
-Session listings and the session metadata included with history expose:
+`agent_models` returns source, freshness (`fetched_at`, `age_seconds`), status and
+pagination. Cursor queries its account-aware CLI `models` command with a 20-second
+timeout; `is_cli_current` is its setting, not every chat's model. Codex reads local
+`models_cache.json`: cached availability/visibility does not prove account access.
+Claude has no verified account-aware catalog here and returns unavailable. Changed
+formats, missing credentials or CLI failures do not trigger hardcoded guesses.
 
-- `last_used_model`: the latest recognized saved model value, or `null`.
-- `model_source`: the explicit metadata field it came from, or `null`.
+Pass `model` to request a selection on a new/resumed turn; omission leaves native
+configuration/resume behavior in charge. `agent_wait` separates `requested_model`
+from explicitly observed `reported_model`, which may be null on success. Requests
+are not proof of alias resolution or absence of native fallback. Discovery runs
+only when requested, not at MCP startup.
 
-Codex uses recent `turn_context.payload.model` (the recorded turn selection), Claude
-uses assistant `message.model`, and Cursor uses `meta.lastUsedModel` (its saved
-selection). These are historical records/settings, not proof of an active backend
-or the model the next turn will use. Aliases such as auto are returned as recorded.
-Synthetic messages and provider names are not treated as model IDs. JSONL lookup
-is bounded to the last 2 MB; missing, older-outside-window, or unrecognized model
-metadata stays unknown. No binary/private database model decoding is added.
+### Failures
 
-Call `agent_models(agent="cursor")` or `agent_models(agent="codex")` when model
-choices are needed. Results contain `status` (`live`, `cached`, or `unavailable`),
-`source`, `fetched_at`, `age_seconds`, model IDs/names, and pagination fields.
+Recognized agent limits/outages are ordinary tool results, not intentional MCP
+transport failures. `status` is job lifecycle; `outcome` can be `running`,
+`succeeded`, `blocked`, `failed` or `interrupted`. Adapter/parser failures can
+return `unavailable`. `failure.scope` distinguishes agent from adapter problems;
+codes include `usage_limit`, `rate_limit`, `authentication_required`,
+`service_unavailable`, `execution_failed`, `interrupted` and `parser_unavailable`.
+Classification is best effort from diagnostics, not a live quota check.
 
-- Cursor: invokes the CLI's account-aware `models` command with a 20-second timeout.
-  Its text format is parsed conservatively; changed output returns unavailable.
-  `is_cli_current` describes the CLI setting, not every existing chat.
-- Codex: reads its local `models_cache.json` and reports its original fetch timestamp
-  and age when known. Cached entries, including visibility metadata, do not establish
-  current account access. Missing or changed cache formats return unavailable.
-- Claude: returns unavailable because the bridge has no verified account-aware model
-  catalog interface for it. Previously used models are not presented as available.
-
-Use `agent_send(..., model="<model-id>")` to request a model for a new or resumed
-turn. Omitting it leaves model selection to that CLI's configuration/resume behavior.
-`agent_wait` returns `requested_model` separately from `reported_model`; the latter
-is populated only from recognized explicit assistant-message model metadata in the
-job output. It may be null even when the turn succeeds. The bridge does not assume
-that the requested alias resolves to a particular backend or survived a fallback.
-
-Discovery runs only on request, never during MCP startup. No model catalog is
-hardcoded, and missing CLIs, auth failures, unsupported formats, or timeouts do not
-disable the bridge's other tools. Refresh client tool metadata to discover the new
-`agent_models` tool after upgrading.
-
-### Continue existing chats across projects
-
-1. Ask for `agent_sessions(agent="cursor")` (or `codex` / `claude`). Each row includes the full session ID, project `cwd`, title, storage source, and whether it can be resumed. Use `cwd` to filter by project and `next_offset` to page through older chats.
-2. Ask for `agent_history` with that exact session ID to summarize it. This only reads local storage; it does not start a model turn. `offset` pages backward from the end, and `include_tools=false` focuses on conversation text. Cursor exposes active structured turns plus any saved compaction summary; it does not claim to recover discarded context.
-3. Call `agent_send` with the same `session_id` and your follow-up prompt. Omit `cwd`: the bridge selects the saved project automatically. A conflicting project, unknown/partial ID, missing project, or unavailable CLI state produces an error instead of starting a new chat.
-4. Poll `agent_wait`. It checks that the CLI returned the requested session ID and reports a continuity error if it did not.
-
-Codex session rows include `parent_session_id` when a parent thread is recorded.
-Group those records as subagent activity under their parent rather than counting
-them as independent main chats. A null parent means none was recorded; it does
-not establish that a record is a user-started development conversation. Tests and
-automated executions may also have no parent.
-
-Cursor support covers **local Cursor CLI chats**, including chats created outside the bridge. Cursor editor/cloud chats are separate; this bridge does not import or synchronize them. Subagent stores are excluded from the Cursor chat list. A moved Cursor project whose store hash no longer matches its saved workspace is listed as readable but not resumable; no automatic database migration is performed.
-
-Do not send simultaneous turns from an editor/terminal and the bridge into the same chat. The bridge prevents overlapping bridge-launched resumes, but cannot reliably detect all external CLI/editor activity. Keep the returned session ID in follow-up requests; omitting it explicitly starts a new chat.
-
-Session parsing depends on local CLI storage formats. Validate compatibility with the CLI versions you deploy; unit tests do not establish public connector connectivity.
-
-Run the regression suite from the source folder in the installed Python environment:
-
-```bash
-~/.local/share/ai-bridge/current/venv/bin/python -m unittest discover -s tests -v
-```
-
-
-## Execution and reliability
-
-The table above lists all 17 tools. Tool schemas returned by `tools/list` define
-the parameters and defaults. Read-only annotations are client hints, not access
-controls; the same authenticated connection can invoke mutating tools.
-
-`run_command` uses a login Bash shell without a TTY and clamps timeouts to
-1–600 seconds (default 120). `start_job` returns a job ID; `job_status` can wait
-up to 110 seconds and include up to 400 tail lines. `list_jobs` returns at most
-100 records. `kill_job` attempts SIGTERM followed by SIGKILL; inspect cleanup
-results because privilege boundaries can prevent termination.
-
-`job_log` defaults to 12,000 bytes per chunk. Follow `next_offset_bytes` and pass
-the returned `generation`; restart pagination if the snapshot changes. Truncated
-logs retain the head and tail, with the middle omitted. Output capture is bounded
-and is not a complete archival transcript.
-
-`read_file` defaults to line 1 and 400 lines, with bounded byte capture.
-`include_hash=true` scans the whole file for SHA256. `write_file` defaults to a
-direct write, creates parent directories, and can append. `atomic=true` opts
-into replacement of supported regular files; `expected_sha256` detects stale
-content, `backup=true` creates a private local copy, and `mode` accepts integer
-permission bits (384 means 0600). Atomic writes reject symlinks, hard links,
-ACLs/xattrs, and special files; they cannot append. Hash checking is optimistic,
-not a lock against another editor. Both file tools accept `sudo=true`.
-
-`agent_send` defaults to waiting 30 seconds (maximum 110); follow its job ID with
-`agent_wait` (default 60 seconds). `agent_sessions` defaults to 15 rows; follow
-`next_offset`. `agent_history` defaults to the last 30 entries with tool actions,
-clips each message to 2,000 characters, and pages backward using `offset` and
-`next_offset`. It allows up to 300 entries and 10,000 characters per message; the
-overall response budget may further reduce a page.
-
-The shell, job, file, authentication, and audit core is separate from optional
-agent adapters. Missing CLIs or unavailable parsers do not disable host tools.
-Legacy/uncertain jobs may lack verified process identity; cleanup and retention
-are conservative. Detached sidecars keep running through a bridge restart and
-use the code of the release that launched them. Retain that release until they
-finish. No restart, rollback, or `kill_job` undoes completed filesystem changes.
-
-Agent permissions apply to the agent CLI invocation, not to the bridge's shell
-and file tools. Cursor maps both `edit` and `full` to `--force`; do not interpret
-`edit` as an equivalent sandbox across providers. Extra CLI arguments configured
-by the operator can also affect behavior.
-
-See [setup](setup.md), [operations](operations.md), and the
-[security and reliability guide](system-hardening.md).
+No automatic retry, model switch or replacement chat occurs. Retain the known
+session ID and inspect guidance before explicitly continuing. For parser failures,
+use `job_status`/`job_log` to inspect the underlying job.

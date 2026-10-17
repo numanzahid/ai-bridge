@@ -1,109 +1,87 @@
 # AI Bridge
 
-We built AI Bridge because we wanted to manage our Linux server from ChatGPT or
-Claude on a phone or laptop without switching back and forth to SSH. We also
-wanted to use the coding agents already installed on that server and continue
-their existing conversations from the same chat.
+We built AI Bridge to manage a Linux machine from a chat on a phone or laptop,
+without switching to SSH for every task. We also wanted to continue conversations
+with the coding agents already installed on that machine.
 
-The bridge is a small Python MCP server. We keep it lightweight: it connects an
-MCP client to shell commands, files, background jobs, and optional local coding
-agents. Quick commands return directly; longer work runs in the background so
-we can check progress without holding a chat request open.
+The bridge is a small Python MCP server connecting your client to shell commands,
+files, background jobs, and optional coding agents. Ask what is using disk space,
+start a build and check it later, read a configuration file, or resume a project
+chat with its existing context.
 
-No local AI models are needed. The connected client supplies the AI; AI Bridge
-does not run a model or need an AI API key of its own. Claude Code, Codex CLI,
-and Cursor CLI are optional and use their own installation and authentication.
-Without them, shell, file, job, system information, instruction discovery, and
-skill discovery tools still work.
+No local model or bridge-specific AI API key is needed. The connected client
+supplies the AI. Native coding CLIs are optional and keep their own installation,
+authentication, settings, and conversation stores. Host administration works
+without them. Shared instructions and skills are discovered on demand; optional
+MCP resources and prompt templates are editable on the host.
 
 ```text
-ChatGPT / Claude / another MCP client
-                | HTTPS + access token
-          public HTTPS tunnel
-                |
-        127.0.0.1:8765 / MCP
-          | shell and sudo
-          | files and background jobs
-          | local Claude Code / Codex / Cursor CLI
+MCP client → HTTPS + bridge token → tunnel → 127.0.0.1:8765
+                                              | shell, files, jobs
+                                              | optional native agents
 ```
 
-We use this for server administration and delegating work to existing agents.
-For example, we can ask what is using disk space, start a build and check it
-later, read a configuration file, or resume a selected coding-agent conversation.
-Shared instructions and local skills are discovered and read when needed.
-Optional MCP resources and prompt templates are editable on the host.
+This is remote administrative access. The token grants the service user's access,
+including potential root access through sudo. In root mode, commands and agents
+already run as root. Read [SECURITY.md](SECURITY.md) before exposing an endpoint.
 
-This is privileged remote access. An access token grants the service user's
-shell and file access, and **potential root access** when sudo is available.
-Trust the client, the tunnel provider, and the content the assistant reads.
-Prompt injection and credential disclosure remain risks; redaction is best effort.
-Read [SECURITY.md](SECURITY.md) before exposing an endpoint.
+## Get started
 
-## Quick start
-
-On a Linux host with systemd, Python 3.10+, and sudo, obtain the source for
-[numanzahid/ai-bridge](https://github.com/numanzahid/ai-bridge), review it, and run
-these five lines from the project folder:
+Use Linux with systemd, Python 3.10+, and outbound dependency access. Review the
+source, then run these commands from its folder in a trusted host terminal:
 
 ```bash
 python3 --version
 bash install.sh
 systemctl status ai-bridge --no-pager
 curl --fail http://127.0.0.1:8765/healthz
-# Follow docs/setup.md to add HTTPS and configure your MCP client securely.
 ```
 
-On a fresh install, `install.sh` bootstraps a versioned app and virtual
-environment, installs dependencies, runs tests, creates configuration and a
-systemd service, and schedules startup. It can install missing Python venv
-support through the host package manager. It asks about storing a sudo password.
-On an existing install it only stages a tested release; activation and restart
-are separate. Non-root installation keeps using your current account. When root
-runs `bash install.sh` interactively, choose a dedicated `ai-bridge` account
-(recommended) or direct root execution (high risk). Dedicated bootstrap copies
-public source into an isolated workspace and offers password-authenticated sudo;
-it never grants blanket NOPASSWD. Root mode needs no sudo binary. Unattended
-root installation requires explicit `--run-as-root`; unattended dedicated-account
-bootstrap is refused. See [bootstrap choices](docs/setup.md#root-bootstrap-choices).
+Follow [setup](docs/setup.md) to configure HTTPS, authentication, and the client.
+Startup is delayed briefly; if the port is occupied, installation completes but
+startup is left pending with instructions for changing the configured port.
 
-The service defaults to loopback. Configure a public HTTPS tunnel and keep token
-authentication enabled before adding the endpoint to a client. Client account
-and workspace policies determine whether remote MCP connectors are available.
+## Choose the service identity
 
-## Sudo setup
+- As a normal user, installation uses that account and asks for sudo as needed.
+- As root, interactive setup recommends a dedicated `ai-bridge` account with
+  explicitly approved password-authenticated sudo. Direct root execution is the
+  high-risk alternative; it needs no sudo binary or non-root account.
+- Unattended fresh root setup requires `--run-as-root`. Dedicated bootstrap
+  requires a terminal. See [bootstrap choices](docs/setup.md#root-bootstrap-choices).
 
-The optional stored credential uses systemd credentials and a private askpass
-helper. Read the [sudo credential mechanics](docs/setup.md#sudo-credentials) and
-trust limitations before enabling privileged tools. Privileged command/file
-results and job views report requested/attempted sudo, confirmed target launch,
-and effective launch identity. Clients are instructed to announce the task,
-target, and outcome. A root service is already root even with `sudo=false`;
-agent `full` permission never changes the Linux user.
+The optional stored sudo password uses systemd credentials and a private askpass
+channel, separate from command stdin. Privileged results distinguish a sudo
+request, an attempt, and confirmed target launch; task success is separate.
+Clients are instructed to announce privileged work. Agent `full` permission
+changes CLI flags, not the Linux user.
 
-## Uninstall
+## Update or remove
 
-From a trusted host terminal, preview `bash install.sh --uninstall --dry-run`,
-then run `bash install.sh --uninstall` and type the displayed confirmation.
-`bash uninstall.sh` is equivalent. Full removal includes bridge instructions,
-resources, prompts, job logs, installed releases, service and stored credential.
-It blocks on unresolved jobs; native agents/history, accounts/homes, unrelated
-source clones and shared tunnels stay. See [full uninstall](docs/operations.md#full-uninstall)
-for ownership checks, alternate paths and deliberate automation. Never remove the
-bridge through its own MCP connection.
+Re-running an existing installation only stages a tested release. Activation and
+restart are separate; see [operations](docs/operations.md#updates-and-rollback).
+
+For full removal, first preview `bash install.sh --uninstall --dry-run`, then run
+`bash install.sh --uninstall` and type the displayed confirmation from a separate
+host terminal. `bash uninstall.sh` is equivalent. Removal includes recognized
+bridge instructions, configuration, jobs/logs, releases, service and credential.
+Accounts/homes, native agents/history, unrelated source clones and shared tunnels
+stay. Unknown ownership or unresolved jobs can block removal. See
+[full uninstall](docs/operations.md#full-uninstall); never run it through the bridge.
 
 ## Documentation
 
-- [Setup](docs/setup.md): installation, HTTPS tunnels, connectors, credentials, and configuration.
-- [Reference](docs/reference.md): all 17 tools, agent permissions, sessions, models, resources, and prompts.
-- [Operations](docs/operations.md): staged updates, restart, rollback, backups, token rotation, and troubleshooting.
-- [Security and reliability](docs/system-hardening.md): trust boundaries, logging, cleanup, and deployment checks.
-- [Shared instructions](docs/instructions-guide.md) and [host configuration formats](ai_bridge/host_defaults/README.md).
-- [Responsible disclosure](SECURITY.md).
+- [Setup](docs/setup.md): identity, credentials, HTTPS, client connection, settings.
+- [Reference](docs/reference.md): 17 tools, permissions, models and session continuity.
+- [Operations](docs/operations.md): updates, rollback, recovery and full uninstall.
+- [Reliability](docs/system-hardening.md): logging, execution limits and verification.
+- [Host configuration](ai_bridge/host_defaults/README.md): MCP guidance, resources and prompts.
+- [Shared instructions](docs/instructions-guide.md): organize documents for discovery.
 
-Run the regression suite from the source folder with the installed environment:
+Run tests from the checkout with the installed environment:
 
 ```bash
 ~/.local/share/ai-bridge/current/venv/bin/python -m unittest discover -s tests -v
 ```
 
-AI Bridge is licensed under the [MIT License](LICENSE).
+Licensed under the [MIT License](LICENSE).
