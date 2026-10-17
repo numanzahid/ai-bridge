@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import sys
 
@@ -35,8 +36,25 @@ def target(value, agent):
     return agent, value
 
 
+class CLIParser(argparse.ArgumentParser):
+    def error(self, message):
+        # Keep argparse's exit code while making piped failures machine-readable.
+        if not sys.stdout.isatty():
+            print(json.dumps({'error': message, 'automatic_retry': False}), file=sys.stderr)
+            self.exit(2)
+        super().error(message)
+
+
+def output_arguments(p, depth):
+    formats = p.add_mutually_exclusive_group()
+    for flag in ('json', 'table'):
+        formats.add_argument('--' + flag, dest=f'output_formats_{depth}', action='append_const',
+                             const=flag, default=argparse.SUPPRESS,
+                             help=f'Use {flag} output (default: table on TTY, JSON otherwise).')
+
+
 def parser():
-    p = argparse.ArgumentParser(prog='ai-bridge' if Path(sys.argv[0]).name == 'ai-bridge' else 'python -m ai_bridge',
+    p = CLIParser(prog='ai-bridge' if Path(sys.argv[0]).name == 'ai-bridge' else 'python -m ai_bridge',
                                 description=__doc__)
     groups = p.add_subparsers(dest='group', required=True)
     agents = groups.add_parser('agents').add_subparsers(dest='action', required=True)
@@ -77,6 +95,14 @@ def parser():
     start = sessions.add_parser('start')
     start.add_argument('--agent', choices=ag.AGENTS, required=True)
     turn_arguments(start)
+    # Suppressed defaults let a global choice survive subparser parsing.
+    def add_formats(command, depth=0):
+        output_arguments(command, depth)
+        for action in command._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for child in action.choices.values():
+                    add_formats(child, depth + 1)
+    add_formats(p)
     return p
 
 
@@ -149,12 +175,31 @@ def dispatch(args, cfg, jobs):
 
 
 def main(argv=None):
-    args = parser().parse_args(argv)
+    command = parser()
+    args = command.parse_args(argv)
+    formats = [value for key, values in vars(args).items()
+               if key.startswith('output_formats_') for value in values]
+    if len(set(formats)) > 1:
+        command.error('--json and --table cannot be combined.')
+    table_output = formats[-1] == 'table' if formats else sys.stdout.isatty()
     try:
         cfg = config()
         result = dispatch(args, cfg, Jobs(cfg))
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         print(json.dumps({'error': str(error), 'automatic_retry': False}), file=sys.stderr)
         return 1
+
+    # Presentation must not turn a completed mutation into a failed command.
+    # Finish rendering before writing anything so fallback is a single JSON result.
+    rendered = None
+    if table_output:
+        try:
+            from .cli_output import render
+            rendered = render(args, result, width=shutil.get_terminal_size(fallback=(100, 24)).columns,
+                              color=sys.stdout.isatty() and 'NO_COLOR' not in os.environ and
+                              os.environ.get('TERM') != 'dumb')
+        except Exception:
+            # Optional formatting can fail independently of the action's success.
+            pass
+    print(rendered if rendered is not None else json.dumps(result, ensure_ascii=False, indent=2))
+    return 0

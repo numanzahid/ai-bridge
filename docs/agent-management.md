@@ -37,6 +37,56 @@ CLI does not load `/etc` credentials. `python -m ai_bridge <management-command>`
 remains supported from the app directory with its venv; without arguments that
 module starts the server. Bare `ai-bridge` instead displays CLI help.
 
+## Terminal output and scripting
+
+Every management subcommand accepts `--json` and `--table`. They also work before
+its group or action, for example `ai-bridge --json agents status` or
+`ai-bridge sessions --table list`. Combining different formats is an error.
+Without a flag, stdout attached to a terminal uses human-readable output;
+redirected or piped stdout keeps the existing JSON data shapes. Scripts should
+use `--json` explicitly when a terminal might be attached.
+
+```bash
+ai-bridge sessions list                         # compact terminal table
+ai-bridge sessions list --json                  # full IDs and metadata
+ai-bridge sessions list --table > sessions.txt  # readable report, no ANSI color
+ai-bridge agents status --json
+ai-bridge tasks inspect task-<24-hex-digits> --table
+```
+
+Lists show totals; sessions also show the current offset, filtered total and
+next offset when another page exists. Keep the same filters and limit when
+requesting the next page. Unavailable agents and unreadable session records
+produce visible warnings; totals cover only successfully enumerated records.
+An explicitly selected unavailable agent still fails. Bridge status describes
+bridge jobs, not external agent activity.
+
+Session UUIDs are shortened to eight characters in lists. These are display
+hints, not accepted selectors and not guaranteed unique. Use `--json` to obtain
+the full UUID, then `sessions inspect agent:<full-UUID>` for every saved field
+and an exact, copyable `selector:` line. Inspect/detail output retains full IDs
+and nested fields. Long table values are ellipsized; use inspect or JSON for
+complete values. Terminals narrower than 70 columns use wrapped records instead
+of columns. Full identity lines in detail output intentionally remain unbroken,
+even when wider than the terminal.
+
+Timestamps in lists are relative (native timestamps without a timezone are
+interpreted in the host's local timezone); inspect and JSON retain original
+values. Unicode display widths account for wide characters and combining marks;
+complex emoji sequences can vary by terminal. Stored terminal control characters
+are escaped in human-readable output. Simple status colors appear only on TTY
+stdout; setting `NO_COLOR` (even empty) or `TERM=dumb` disables them. Piped output
+never contains generated ANSI colors, including with `--table`.
+
+Operational errors remain JSON on stderr with exit code 1, including in table
+mode. Invalid arguments retain exit code 2 and use JSON on stderr when stdout is
+not a TTY; terminal argument errors retain argparse usage help. Success remains
+exit code 0. If table formatting fails after a successful action, the CLI emits
+the JSON result on stdout and exits 0 without repeating the action. Help is
+always human-readable. Format flags affect presentation
+only; interactive opening still requires a real terminal and all ownership,
+cleanup and cancellation checks still apply.
+
 ## Tasks and turns
 
 ```bash
