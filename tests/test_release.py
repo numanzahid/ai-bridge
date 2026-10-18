@@ -49,6 +49,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(release.check(root), ai_bridge.__version__)
         self.assertEqual(server.mcp.version, ai_bridge.__version__)
 
+    def test_clients_receive_title_website_and_icons(self):
+        import asyncio
+        from mcp import Client
+
+        async def info():
+            async with Client(server.mcp) as client:
+                return client.server_info
+        result = asyncio.run(info())
+        self.assertEqual((result.version, result.website_url), (ai_bridge.__version__, 'https://zahid.dev'))
+        self.assertTrue(result.title.startswith('AI Bridge ('))
+        self.assertIn(ai_bridge.__author__, result.description)
+        self.assertEqual([icon.sizes for icon in result.icons], [['128x128'], ['48x48']])
+        self.assertTrue(all(icon.src.startswith('data:image/png;base64,') for icon in result.icons))
+
 
 if __name__ == '__main__':
     unittest.main()

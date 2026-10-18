@@ -52,6 +52,10 @@ Keep `AI_BRIDGE_HOST=127.0.0.1`. Point an HTTPS tunnel or reverse proxy you cont
 - Enter the token only in the host and connector settings, never in chat or commands.
 - `/healthz` only shows the server is up. Confirm the client lists 17 tools.
 - Keep the client's action approvals on.
+- Name each connector after its host (for example "Workspace"). The bridge also sends its title
+  (`AI Bridge (<hostname>)`), version, description, website and icon, but ChatGPT and Claude
+  mostly ignore these for custom connectors. Where the client asks for an icon, upload
+  `ai_bridge/assets/icon-128.png`.
 
 ## Sudo credentials
 

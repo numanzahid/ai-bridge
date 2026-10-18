@@ -5,6 +5,12 @@ see [releasing](docs/releasing.md) for when to bump which part.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-19
+
+### Added
+- Server info for clients: title `AI Bridge (<hostname>)`, description, author, website
+  (https://zahid.dev) and icons (`ai_bridge/assets/`, sent as data URIs).
+
 ## [3.0.2] - 2026-10-19
 
 ### Fixed

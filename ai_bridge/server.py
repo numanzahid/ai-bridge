@@ -25,7 +25,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import __version__
+from . import __author__, __description__, __title__, __url__, __version__
 from .optional_agents import agents as ag
 from .agent_failures import describe_failure
 from . import catalog
@@ -55,7 +55,22 @@ WAIT_SLOTS = threading.BoundedSemaphore(8)
 HOST_CONFIG = HostConfig()
 INSTRUCTIONS = REDACT(HOST_CONFIG.instructions + "\n" + CLIENT_INSTRUCTIONS)
 
-mcp = MCPServer(name="ai-bridge", instructions=INSTRUCTIONS, version=__version__)
+def _icons():
+    """Bundled icons as data URIs, so clients need no public, token-free URL to show them."""
+    import base64
+    from mcp.types import Icon
+    icons = []
+    for size in (128, 48):
+        path = Path(__file__).with_name('assets') / f'icon-{size}.png'
+        if path.is_file():
+            data = base64.b64encode(path.read_bytes()).decode()
+            icons.append(Icon(src=f'data:image/png;base64,{data}', mime_type='image/png', sizes=[f'{size}x{size}']))
+    return icons or None
+
+
+mcp = MCPServer(name="ai-bridge", title=f"{__title__} ({socket.gethostname()})", version=__version__,
+                description=f"{__description__} By {__author__}.", website_url=__url__, icons=_icons(),
+                instructions=INSTRUCTIONS)
 
 RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 RW = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True)
