@@ -6,7 +6,7 @@ through `sudo` (password typed on a real terminal) into a root-owned folder. The
 that folder, so its own tools cannot approve their requests. Repeating the exact call after
 approval runs it; "once" decisions are single use, "task" decisions allow a short window.
 
-Run `python -m ai_bridge.approvals --help` on the host for the approver commands.
+Run `python3 -I ~/.local/share/ai-bridge/current/app/ai_bridge/approvals.py --help` on the host.
 """
 from __future__ import annotations
 
@@ -377,9 +377,10 @@ def sudo_writer(folder: Path, name: str, record: dict) -> None:
 
 
 def approver_command() -> str:
-    current = Path.home() / '.local/share/ai-bridge/current/venv/bin/python'
-    python = '~/.local/share/ai-bridge/current/venv/bin/python' if current.exists() else sys.executable
-    return f'{python} -m ai_bridge.approvals'
+    """This file only needs the standard library, so system Python runs it straight from the release."""
+    current = Path.home() / '.local/share/ai-bridge/current/app/ai_bridge/approvals.py'
+    script = '~/.local/share/ai-bridge/current/app/ai_bridge/approvals.py' if current.exists() else __file__
+    return f'python3 -I {script}'
 
 
 # CLI -------------------------------------------------------------------------

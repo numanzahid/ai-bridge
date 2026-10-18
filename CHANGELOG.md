@@ -5,6 +5,12 @@ see [releasing](docs/releasing.md) for when to bump which part.
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-10-19
+
+### Fixed
+- The approval command shown to users only worked from a source checkout. It is now
+  `python3 -I ~/.local/share/ai-bridge/current/app/ai_bridge/approvals.py` (standard library only).
+
 ## [3.0.1] - 2026-10-19
 
 ### Fixed
@@ -16,7 +22,7 @@ see [releasing](docs/releasing.md) for when to bump which part.
 ### Changed (breaking)
 - Privileged calls need approval on the host: `sudo=true` (shell, jobs, files) and
   `ssh_run(remote_sudo=true)` return `status: approval_required` with a request ID until the user
-  approves with `python -m ai_bridge.approvals` (sudo password every time). Approve once, or for a
+  approves with the host approval command (sudo password every time). Approve once, or for a
   task (10 calls, 15 min). Repeating the exact call runs it. `AI_BRIDGE_SUDO_APPROVAL=0` turns it off.
   See [sudo approval](docs/sudo-approval.md).
 

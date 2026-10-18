@@ -207,6 +207,13 @@ class ApprovalStoreTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             fake_root_writer(self.decisions, '../escape.json', {'id': 'x'})
 
+    def test_approver_runs_as_a_standalone_script_with_system_python(self):
+        script = Path(approvals.__file__)
+        result = subprocess.run([sys.executable, '-I', str(script), '--state-dir', str(self.root / 'state'), 'list'],
+                                capture_output=True, text=True, cwd=self.root, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(approvals.approver_command().startswith('python3 -I '))
+
     def test_cli_refuses_decisions_from_bridge_processes_or_without_a_terminal(self):
         request_id = self.request()
         state = ['--state-dir', str(self.root / 'state')]

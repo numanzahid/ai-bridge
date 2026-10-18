@@ -13,14 +13,14 @@ every tool set to "always allow"; that no longer means root.
    ```
 2. You approve on the host. Your sudo password is asked every time:
    ```bash
-   P=~/.local/share/ai-bridge/current/venv/bin/python
-   $P -m ai_bridge.approvals              # pending requests
-   $P -m ai_bridge.approvals show 7F3KA2B901
-   $P -m ai_bridge.approvals approve 7F3KA2B901          # once
-   $P -m ai_bridge.approvals approve 7F3KA2B901 --task   # this + more, see below
-   $P -m ai_bridge.approvals reject 7F3KA2B901
-   $P -m ai_bridge.approvals history
-   $P -m ai_bridge.approvals revoke 7F3KA2B901           # end a task window early
+   A=~/.local/share/ai-bridge/current/app/ai_bridge/approvals.py
+   python3 -I $A              # pending requests
+   python3 -I $A show 7F3KA2B901
+   python3 -I $A approve 7F3KA2B901          # once
+   python3 -I $A approve 7F3KA2B901 --task   # this + more, see below
+   python3 -I $A reject 7F3KA2B901
+   python3 -I $A history
+   python3 -I $A revoke 7F3KA2B901           # end a task window early
    ```
    Away from the host, SSH in and run the same commands.
 3. You tell the AI. It repeats the exact same call, and it runs.
