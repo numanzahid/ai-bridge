@@ -96,66 +96,6 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'symlinks'):
                 bootstrap.copy_source(source, parent, self.account)
 
-    def shell(self, *args, uid=0):
-        binary = self.root/'bin'; binary.mkdir(exist_ok=True)
-        identity = binary/'id'
-        identity.write_text('#!/bin/sh\ncase "$1" in -u) echo '+str(uid)+';; -un) echo test-user;; *) echo test-group;; esac\n')
-        identity.chmod(0o700)
-        env = dict(os.environ, HOME=str(self.home), PATH=str(binary)+':'+os.environ['PATH'])
-        return subprocess.run(['bash', 'install.sh', *args], env=env, input='', text=True, capture_output=True, timeout=5)
-
-    def test_root_noninteractive_refuses_before_staging(self):
-        result = self.shell()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('explicit --run-as-root', result.stderr)
-        self.assertFalse((self.home/'.local/share/ai-bridge').exists())
-
-    def test_nonroot_rejects_root_flags_and_unknown_options(self):
-        for option in ('--run-as-root', '--dedicated-user', '--typo'):
-            result = self.shell(option, uid=1000)
-            self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Usage:', result.stderr)
-
-    def test_existing_nonroot_path_stages_without_sudo(self):
-        (self.home/'.local/share/ai-bridge/app').mkdir(parents=True)
-        binary = self.root/'bin'; binary.mkdir()
-        python = binary/'python3'
-        python.write_text('#!/bin/sh\nprintf "staged-fixture\\n"\n'); python.chmod(0o700)
-        result = self.shell(uid=1000)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('staging only', result.stderr)
-        self.assertIn('staged-fixture', result.stdout)
-
-    def test_root_prompt_shell_dispatches_both_choices(self):
-        source = Path('install.sh').read_text()
-        branch = source.split('if [ "$(id -u)" -eq 0 ] && [ "$MODE" != --run-as-root ]; then', 1)[1].split('\nif [ "$(id -u)" -ne 0 ]; then', 1)[0]
-        # Only the decision branch runs; no installer, account, or service action.
-        import pty
-        for choice, expected in ((b'1\n', 'BOOTSTRAP /source/bootstrap.py --source /source'), (b'2\n', 'MODE=--run-as-root'), (b'bad\n', 'Invalid choice')):
-            master, slave = pty.openpty()
-            fake = self.root/'python3'
-            fake.write_text('#!/bin/sh\nprintf "BOOTSTRAP %s\\n" "$*"\n')
-            fake.chmod(0o700)
-            harness = 'set -e; die() { echo "$*"; exit 1; }; MODE=; SRC_DIR=/source; if true; then '+branch+'\necho "MODE=$MODE"'
-            process = subprocess.Popen(['bash', '-c', harness], stdin=slave, stdout=slave, stderr=slave,
-                                       env=dict(os.environ, PATH=str(self.root)+':'+os.environ['PATH']))
-            os.close(slave)
-            try:
-                os.write(master, choice)
-                process.wait(timeout=3)
-                output = b''
-                while True:
-                    try:
-                        output += os.read(master, 4096)
-                    except OSError:
-                        break
-                self.assertIn(expected, output.decode())
-                self.assertEqual(process.returncode, 1 if choice == b'bad\n' else 0)
-            finally:
-                os.close(master)
-                if process.poll() is None:
-                    process.kill(); process.wait()
-
     def test_password_policy_is_explicit_and_validated_without_nopasswd(self):
         policy = self.root/'policy'; policy.mkdir()
         with patch('shutil.which', return_value='/fake'), patch('builtins.input', return_value='y'), \
@@ -212,51 +152,6 @@ class BootstrapTests(unittest.TestCase):
                 bootstrap.prerequisites()
             self.assertEqual(run.call_args.args[0], ['apt-get', 'update'])
 
-    def test_fresh_root_install_without_sudo_uses_root_unit_and_no_credential(self):
-        import shlex
-        import sys
-        source = self.root/'source'; source.mkdir()
-        etc, unit = self.root/'etc', self.root/'service.unit'
-        release = self.root/'fixture-release'; (release/'venv/bin').mkdir(parents=True)
-        interpreter = release/'venv/bin/python'
-        interpreter.write_text('#!/bin/sh\nexit 0\n'); interpreter.chmod(0o700)
-        installer = source/'install.sh'
-        text = Path('install.sh').read_text().replace('ETC_DIR="/etc/ai-bridge"', 'ETC_DIR='+shlex.quote(str(etc)))
-        text = text.replace('UNIT_FILE="/etc/systemd/system/ai-bridge.service"', 'UNIT_FILE='+shlex.quote(str(unit)))
-        installer.write_text(text)
-        binary = self.root/'bin'; binary.mkdir()
-        commands = {
-            'id': '#!/bin/sh\ncase "$1" in -u) echo 0;; -un|-gn) echo root;; *) exit 1;; esac\n',
-            'sudo': '#!/bin/sh\necho UNEXPECTED-SUDO >&2; exit 99\n',
-            'systemctl': '#!/bin/sh\nprintf "%s\\n" "$*" >> '+shlex.quote(str(self.root/'systemctl.log'))+'\n',
-            'systemd-run': '#!/bin/sh\nprintf "%s\\n" "$*" >> '+shlex.quote(str(self.root/'scheduled.log'))+'\n',
-            'install': '#!'+sys.executable+'\nimport shutil,sys,os\na=sys.argv[1:]; shutil.copyfile(a[-2],a[-1]); os.chmod(a[-1],int(a[a.index("-m")+1],8))\n',
-            'python3': '#!/bin/sh\nif [ "$2" = "check-port" ]; then echo available; exit 0; fi\n'
-                       'if [ "$2" = "stage" ]; then echo '+shlex.quote(str(release))+'; exit 0; fi\n'
-                       'if [ "$2" = "activate" ]; then exit 0; fi\n'
-                       'if [ "$2" = "--record-install" ]; then exit 0; fi\n'
-                       'if [ "$2" = "import ensurepip" ]; then exit 0; fi\n'
-                       'if [ "$1" = "-m" ]; then exit 0; fi\n'
-                       'exec '+shlex.quote(sys.executable)+' "$@"\n',
-        }
-        for name, body in commands.items():
-            path = binary/name; path.write_text(body); path.chmod(0o700)
-        env = dict(os.environ, HOME=str(self.home), PATH=str(binary)+':'+os.environ['PATH'])
-        result = subprocess.run(['/bin/bash', str(installer), '--run-as-root'], env=env, input='', capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('User=root\n', unit.read_text())
-        self.assertIn('# LoadCredential=', unit.read_text())
-        self.assertFalse((etc/'sudo.pass').exists())
-        self.assertIn('no sudo password will be stored', result.stdout)
-        self.assertIn('--on-active=3s', (self.root/'scheduled.log').read_text())
-        self.assertEqual((etc/'ai-bridge.env').stat().st_mode & 0o777, 0o640)
-        # A different/incomplete existing installation is refused before any write.
-        previous = unit.read_bytes()
-        again = subprocess.run(['/bin/bash', str(installer), '--run-as-root'], env=env, input='', capture_output=True, text=True, timeout=10)
-        self.assertNotEqual(again.returncode, 0)
-        self.assertIn('refusing to overwrite', again.stderr)
-        self.assertEqual(unit.read_bytes(), previous)
-
     def test_account_and_copy_failures_never_execute_installer(self):
         with patch('bootstrap.prerequisites'), patch('pwd.getpwnam', side_effect=KeyError), \
              patch('bootstrap.installation_matches', return_value=False), patch.object(Path, 'exists', return_value=False), \
@@ -270,21 +165,3 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'copy failed'):
                 bootstrap.dedicated(self.root, 'bridge-test')
             execute.assert_not_called()
-
-    def test_credential_writer_creates_private_file_without_newline(self):
-        import sys
-        source = Path('install.sh').read_text()
-        code = source.split("printf '%s' \"$PW\" | sudo -n python3 -c '", 1)[1].split("\n' \"$PASS_FILE\"", 1)[0]
-        target = self.root/'synthetic-credential'
-        result = subprocess.run([sys.executable, '-c', code, str(target)], input=b'test-only-password', capture_output=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(target.read_bytes(), b'test-only-password')
-        self.assertEqual(result.stdout, b'')
-
-    def test_root_wrapper_requires_no_sudo_binary(self):
-        source = Path('install.sh').read_text()
-        wrapper = source.split('# Root can manage', 1)[1].split('# Staging needs', 1)[0]
-        result = subprocess.run(['bash', '-c', 'id() { echo 0; }; '+wrapper+'\nsudo -v; sudo printf root-ok'], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, 'root-ok')

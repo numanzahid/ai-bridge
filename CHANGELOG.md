@@ -1,0 +1,42 @@
+# Changelog
+
+All notable changes to AI Bridge. Versions follow [Semantic Versioning](https://semver.org/);
+see [releasing](docs/releasing.md) for when to bump which part.
+
+## [Unreleased]
+
+## [2.0.0] - 2026-10-18
+
+### Changed (breaking)
+- Tools reduced from 23 to 17. System tools stay the core and also manage agent turns:
+
+  | Removed | Use instead |
+  |---|---|
+  | `agent_wait`, `agent_runtime`, `job_log` | `job_status` (`log_offset` pages full output) |
+  | `agent_stop` | `kill_job` |
+  | `agent_models`, `tasks_list` | `agent_list(show=models/tasks)` |
+  | `list_skills` | `list_instructions(kind=skills)` |
+
+  Host `tool-descriptions/` overrides for removed tools are ignored with a warning.
+
+### Added
+- Interactive agent turns (default for Claude and Codex): normal chats the user can open in the
+  terminal (`claude attach`/`--resume`, `codex resume`). `mode=exec` keeps the headless runs.
+- `agent_send(remote=true)`: Remote Control for Claude (claude.ai/code link) and Codex (daemon-wide).
+- `agent_send(name=...)` sets the chat's display name.
+- `agent_manage`: session aliases, archive/unarchive, and task workspace cleanup (preview, then `confirm`).
+- `agent_sessions(include_archived)` and `list_jobs(kind)` filters.
+- `AI_BRIDGE_TRUST_TASKS=1` (opt-in): new task workspaces are trusted for Claude, Codex and Cursor,
+  so agents run there without a terminal prompt. Cleanup removes the trust.
+- Version reported by MCP and `system_info` (`bridge_version`, `bridge_release`).
+- `release.py` to bump the version and date changelog notes; [releasing](docs/releasing.md) guide.
+- Releases record `RELEASE.json` (version, commit, staging time) and include the version in their folder name.
+- Activation refuses changed code without a version bump, and older versions (use `--rollback`).
+
+### Changed
+- Shorter docs and client guidance; tool reference lists each tool with an example.
+- Tests consolidated; they no longer depend on umask.
+
+## [1.0.0] - 2026-10-18
+
+Baseline: commit `0b969e0`, release `20261017T200345Z-3d4f0e52`.

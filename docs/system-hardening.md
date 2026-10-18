@@ -1,66 +1,37 @@
 # Security and reliability
 
-AI Bridge intentionally exposes administrative shell/file/job access and optional
-native agents. See [SECURITY.md](../SECURITY.md) for the trust boundary and
-[operations](operations.md) for recovery commands.
+What the bridge does and doesn't protect. Trust boundary: [SECURITY.md](../SECURITY.md).
 
-## Access and credentials
+## Access
 
-A dedicated service account is recommended. Its files, credentials and sudo
-capabilities remain reachable through authenticated tools; direct root mode
-already has root identity. There is no per-client identity, filesystem jail or
-per-tool authorization behind the shared token. Agent flags and read-only tool
-annotations do not restrict the host administration tools.
+- One shared token reaches every tool. There are no per-client roles, path limits or sandbox.
+- Use a dedicated service account, keep the listener on loopback behind HTTPS, and set allowed hosts.
+- Members of the service user's primary group can read the env file (0640); review that group.
+- Keep client approvals on: files, web pages, skills and agent replies can carry prompt injection.
+- Redaction masks known bridge secrets only. Child processes don't get `AI_BRIDGE_*` variables,
+  but other secrets in the environment remain visible.
 
-Keep the listener on loopback behind trusted HTTPS and configure allowed hosts
-for the endpoint. Origins are not authentication. A TLS terminator can inspect
-requests, and path tokens can enter logs/history. Review primary group membership:
-other members may read the root:service-group 0640 environment file. Same-user
-shell execution can recover loaded credentials or access the private credential
-channel. See [setup](setup.md) for delivery and precedence.
+## Logs and retention
 
-Keep client approvals enabled. Files, web content, skills, prompts and agent
-output can contain prompt injection; server guidance is not an enforcement layer.
-The redactor masks known bridge secrets and selected encodings, not arbitrary
-credentials, transformations, command-created files or external logs. Child
-environments strip `AI_BRIDGE_*` and `CREDENTIALS_DIRECTORY`; other inherited
-secrets remain accessible. Never test redaction using a real secret remotely.
-
-## Logging and retention
-
-Audit defaults to `~/.local/state/ai-bridge/audit.log`: private local activity
-records with operation identifiers and bounded rotation, not tamper-proof evidence.
-Raw job output, summaries, native histories and backups may retain sensitive
-content. Inspect locally and redact shared copies. Automatic job cleanup is off
-by default (`AI_BRIDGE_RETENTION_DAYS=0`); when enabled it conservatively retains
-running/uncertain jobs. Native history, external logs, archives and old releases
-need separate retention decisions.
+- Audit log: `~/.local/state/ai-bridge/audit.log`, private and rotated, but not tamper-proof.
+- Job output, agent histories and backups can contain secrets. Redact before sharing.
+- Job cleanup is off by default (`AI_BRIDGE_RETENTION_DAYS=0`). When on, it never removes
+  running or uncertain jobs. Old releases and native histories are never cleaned.
 
 ## Execution limits
 
-Commands have bounded capture/timeouts; jobs use detached runners, bounded
-head/tail logs and atomic metadata snapshots. Review timeout/cancel cleanup:
-privilege boundaries can prevent signals and descendants can escape groups.
-Process identity/boot checks reduce PID-reuse risk; old records remain uncertain.
-Privilege disclosure confirms launch identity separately from task outcome.
-
-`KillMode=process` allows jobs to outlive bridge restarts/stops. Keep their
-originating releases. `NoNewPrivileges=yes` conflicts with intentional sudo use;
-test unit hardening on an isolated host. Atomic file replacement is opt-in and
-rejects unsupported types/metadata. Hash checking is optimistic, not a lock.
-Neither cancellation nor release rollback reverses completed work.
-
-Validate adapters against the deployed CLI versions; native storage/output can
-change. Tests cannot establish live account availability, public reachability or
-real systemd/sudo provisioning. Stage, verify, select, restart and check authenticated
-tools separately. Keep a trusted recovery terminal available. Full uninstall has
-additional checks but is not transactional; see its [procedure](operations.md#full-uninstall).
+- Commands and output are bounded. Jobs run detached with head/tail logs.
+- Cancel reports how complete the cleanup was. Privilege boundaries or escaped
+  child processes can survive.
+- Jobs outlive restarts (`KillMode=process`). Keep their release until they finish.
+- `NoNewPrivileges=yes` breaks sudo. Test any unit hardening on a spare host.
+- Nothing (cancel, rollback, uninstall) undoes work already done.
 
 ## Containment
 
-From a trusted host terminal, disable only the bridge's public route and stop it
-with `sudo systemctl stop ai-bridge` (or directly as root). Detached jobs may
-continue: inspect them separately using verified identities and appropriate
-privileges. Rotate exposed bridge/host credentials, inspect affected files/logs,
-and recover from known-good backups as needed. Stopping or rotating access
-cannot undo commands already run.
+If access may be compromised, from a host terminal:
+
+1. Disable the bridge's public route and run `sudo systemctl stop ai-bridge`.
+2. Check for detached jobs still running and stop them deliberately.
+3. Rotate the bridge token and any exposed credentials.
+4. Review affected files and logs, and restore from backups if needed.

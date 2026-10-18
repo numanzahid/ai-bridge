@@ -1,7 +1,6 @@
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import time
@@ -11,7 +10,6 @@ from unittest.mock import patch
 from ai_bridge.core import Config, Jobs, SudoUnavailable
 from ai_bridge.execution import execute
 from ai_bridge.privilege import CLIENT_INSTRUCTIONS, fields, initial, job_fields
-from ai_bridge.responses import render
 
 
 class PrivilegeTests(unittest.TestCase):
@@ -45,7 +43,6 @@ class PrivilegeTests(unittest.TestCase):
         with patch('os.geteuid', return_value=1000), patch('shutil.which', return_value=None):
             with self.assertRaises(SudoUnavailable):
                 execute(self.cfg, ['true'], str(self.root), 2, True)
-        self.assertFalse(initial(True)['sudo_used'])
 
     def test_confirmed_launch_does_not_mean_command_succeeded(self):
         with patch('os.geteuid', return_value=1000), self.fake('import os,sys; args=sys.argv[sys.argv.index("--")+1:]; os.execvpe(args[0],args,os.environ)'):
@@ -109,17 +106,9 @@ class PrivilegeTests(unittest.TestCase):
         self.assertFalse(Jobs(self.cfg).load(job['id'])['privilege']['sudo_used'])
         self.assertTrue(done['privilege']['sudo_attempted'])
 
-    def test_disclosure_survives_output_truncation(self):
-        result = {'stdout': 'x'*50000, **fields(initial(True))}
-        value = json.loads(render(result, 512, lambda text: text))
-        self.assertIn('privilege', value)
-        self.assertIn('privilege_message', value)
-        self.assertTrue(value['truncation']['truncated'])
-
-    def test_instructions_present_in_default_and_mandatory_override_layer(self):
+    def test_instructions_present_in_client_and_default_layers(self):
+        # test_core_http verifies both layers reach the MCP initialize response.
         self.assertIn('tell the user the task and target', CLIENT_INSTRUCTIONS)
-        source = Path('ai_bridge/server.py').read_text()
-        self.assertIn('HOST_CONFIG.instructions + "\\n" + CLIENT_INSTRUCTIONS', source)
         default = Path('ai_bridge/host_defaults/server-instructions.md').read_text()
         for text in ('tell the user', 'sudo=false', 'Never reveal', 'service user'):
             self.assertIn(text, default)
@@ -128,7 +117,7 @@ class PrivilegeTests(unittest.TestCase):
 class ToolPrivilegeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from test_server_sessions import server
+        from helpers import server
         cls.server = server
 
     def test_file_helpers_disclose_and_keep_plain_reads_unchanged(self):
@@ -163,5 +152,5 @@ class ToolPrivilegeTests(unittest.TestCase):
              patch.object(server.JOBS, 'tail', return_value=''), patch.object(server.JOBS, 'load', return_value=meta), \
              patch.object(server.JOBS, 'log_chunk', return_value={'text': 'log'}):
             results = [json.loads(server.start_job('true', sudo=True)), json.loads(server.job_status('test-job')),
-                       json.loads(server.list_jobs())[0], json.loads(server.kill_job('test-job')), json.loads(server.job_log('test-job'))]
+                       json.loads(server.list_jobs())[0], json.loads(server.kill_job('test-job')), json.loads(server.job_status('test-job', log_offset=0))]
         self.assertTrue(all(result['privilege'] == value for result in results))

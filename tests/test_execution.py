@@ -1,7 +1,5 @@
-import json
 import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import tempfile
@@ -11,6 +9,9 @@ from unittest.mock import patch
 
 from ai_bridge.core import Config, Jobs
 from ai_bridge.execution import execute, process_identity, terminate_group
+from ai_bridge.job_paths import KINDS, sidecar_path
+
+SID = '11111111-2222-4333-8444-555555555555'
 
 
 class ExecutionTests(unittest.TestCase):
@@ -106,6 +107,13 @@ class ExecutionTests(unittest.TestCase):
         for i in range(220):
             jobs.save({'id':f'test-done-{i}','status':'done','kind':'agent','agent':'cursor','session_id':str(i)})
         self.assertEqual(jobs.running_for_session('cursor','same')['id'],'test-running')
+        # A running job whose session id is only in its unpolled output is also found.
+        job={'id':'unpolled-job','agent':'codex','status':'running','session_id':None}
+        rows=[{'id':f'old-{i}','status':'done','agent':'codex'} for i in range(220)]+[job]
+        with patch.object(jobs,'list',return_value=rows) as listing, \
+             patch.object(jobs,'output_info',return_value={'parsed':{'session_id':SID}}):
+            self.assertEqual(jobs.running_for_session('codex',SID)['id'],job['id'])
+            listing.assert_called_once_with(limit=None,kind='agent')
 
     def test_logs_bounded_summary_retains_first_id_and_final_error(self):
         jobs=Jobs(self.cfg)
@@ -126,13 +134,16 @@ class ExecutionTests(unittest.TestCase):
         self.cfg.retention_days=30
         jobs=Jobs(self.cfg)
         for status in ('running','cleanup_incomplete','done'):
-            jobs.save({'id':'test-'+status.replace('_','-'),'status':status,'started':1,'ended':1,'pid':os.getpid()})
+            job_id='test-'+status.replace('_','-')
+            jobs.save({'id':job_id,'status':status,'started':1,'ended':1,'pid':os.getpid()})
+            for kind in KINDS:
+                sidecar_path(jobs.dir,job_id,kind,create=True).write_text('{}')
         jobs.prune()
-        self.assertTrue(jobs._meta_path('test-running').exists())
-        self.assertTrue(jobs._meta_path('test-cleanup-incomplete').exists())
-        self.assertFalse(jobs._meta_path('test-done').exists())
+        for job_id,kept in (('test-running',True),('test-cleanup-incomplete',True),('test-done',False)):
+            self.assertEqual(jobs._meta_path(job_id).exists(),kept,job_id)
+            for kind in KINDS:
+                self.assertEqual(sidecar_path(jobs.dir,job_id,kind).exists(),kept,(job_id,kind))
 
-class AdditionalExecutionTests(unittest.TestCase):
     def test_permission_denied_cleanup_is_not_success(self):
         with patch('os.killpg',side_effect=PermissionError),patch('ai_bridge.execution.group_alive',return_value=True):
             result=terminate_group(12345,grace=0)
@@ -140,29 +151,23 @@ class AdditionalExecutionTests(unittest.TestCase):
         self.assertTrue(result['permission_denied'])
 
     def test_log_cursor_rejects_a_changed_snapshot(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);(root/'jobs').mkdir()
-            jobs=Jobs(Config(token='fake',state_dir=root))
-            path=jobs.log_path('test-log');path.write_text('original')
-            first=jobs.log_chunk('test-log',0,2)
-            other=root/'jobs/replacement';other.write_text('updated');os.replace(other,path)
-            self.assertIn('changed',jobs.log_chunk('test-log',2,2,first['generation'])['error'])
+        jobs=Jobs(self.cfg)
+        path=jobs.log_path('test-log');path.write_text('original')
+        first=jobs.log_chunk('test-log',0,2)
+        other=self.root/'jobs/replacement';other.write_text('updated');os.replace(other,path)
+        self.assertIn('changed',jobs.log_chunk('test-log',2,2,first['generation'])['error'])
 
     def test_corrupt_metadata_does_not_hide_other_jobs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);(root/'jobs').mkdir()
-            jobs=Jobs(Config(token='fake',state_dir=root))
-            jobs.save({'id':'test-ok','status':'done'})
-            jobs._meta_path('test-bad').write_text('{broken')
-            self.assertEqual([row['id'] for row in jobs.list()],['test-ok'])
+        jobs=Jobs(self.cfg)
+        jobs.save({'id':'test-ok','status':'done'})
+        jobs._meta_path('test-bad').write_text('{broken')
+        self.assertEqual([row['id'] for row in jobs.list()],['test-ok'])
 
     def test_detached_job_survives_creator_process_exit(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);(root/'jobs').mkdir()
-            command=[sys.executable,'-c','import time; time.sleep(.5); print("survived")']
-            code='from pathlib import Path; import sys; from ai_bridge.core import Config,Jobs; root=Path(sys.argv[1]); j=Jobs(Config(token="fake",state_dir=root)); m=j.start('+repr(command)+',str(root)); print(m["id"])'
-            job_id=subprocess.check_output([sys.executable,'-c',code,tmp],text=True).strip()
-            jobs=Jobs(Config(token='fake',state_dir=root))
-            result=jobs.wait(job_id,5)
-            self.assertEqual(result['status'],'done')
-            self.assertIn('survived',jobs.read_log(job_id))
+        command=[sys.executable,'-c','import time; time.sleep(.5); print("survived")']
+        code='from pathlib import Path; import sys; from ai_bridge.core import Config,Jobs; root=Path(sys.argv[1]); j=Jobs(Config(token="fake",state_dir=root)); m=j.start('+repr(command)+',str(root)); print(m["id"])'
+        job_id=subprocess.check_output([sys.executable,'-c',code,str(self.root)],text=True).strip()
+        jobs=Jobs(self.cfg)
+        result=jobs.wait(job_id,5)
+        self.assertEqual(result['status'],'done')
+        self.assertIn('survived',jobs.read_log(job_id))

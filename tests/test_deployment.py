@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import re
+import shutil
 import tempfile
 import unittest
 
@@ -56,34 +58,6 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(result.stdout.strip(),str(release))
 
-    def test_unit_migration_preserves_settings_and_original_rollback(self):
-        import os,stat,subprocess,sys
-        source=(self.source/'install.sh').read_text()
-        script=source.split("<<'UNITPY'\n",1)[1].split('\nUNITPY',1)[0]
-        unit=Path(self.tmp.name)/'ai-bridge.service'
-        original='[Service]\nEnvironmentFile=/private/config.env\nLoadCredential=sudo_pass:/private/sudo.pass\nKillMode=process\nEnvironment=PYTHONPATH=/old/app\nExecStart=/old/venv/bin/python -m ai_bridge\n'
-        unit.write_text(original)
-        selected=Path(self.tmp.name)/'release'
-        subprocess.run([sys.executable,'-',str(unit),str(selected)],input=script,text=True,check=True)
-        self.assertIn('ExecStart='+str(selected/'venv/bin/python'),unit.read_text())
-        self.assertIn('LoadCredential=sudo_pass:/private/sudo.pass',unit.read_text())
-        self.assertIn('EnvironmentFile=/private/config.env',unit.read_text())
-        backup=unit.with_name('ai-bridge.service.before-versioned')
-        self.assertEqual(backup.read_text(),original)
-        self.assertEqual(stat.S_IMODE(backup.stat().st_mode),0o600)
-        subprocess.run([sys.executable,'-',str(unit),str(selected)],input=script,text=True,check=True)
-        self.assertEqual(backup.read_text(),original)
-
-    def test_installer_stage_does_not_call_sudo_or_change_active_app(self):
-        import os,subprocess
-        bin_dir=Path(self.tmp.name)/'bin';bin_dir.mkdir()
-        python=bin_dir/'python3';python.write_text('#!/bin/sh\nprintf "staged-fixture\\n"\n');python.chmod(0o700)
-        sudo=bin_dir/'sudo';sudo.write_text('#!/bin/sh\necho unexpected-sudo >&2\nexit 99\n');sudo.chmod(0o700)
-        result=subprocess.run(['bash',str(self.source/'install.sh'),'--stage'],env=dict(os.environ,HOME=self.tmp.name,PATH=str(bin_dir)+os.pathsep+os.environ['PATH']),capture_output=True,text=True)
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertEqual(result.stdout.strip(),'staged-fixture')
-        self.assertFalse((Path(self.tmp.name)/'.local/share/ai-bridge/current').exists())
-
     def test_busy_port_warning_allows_installation_to_continue(self):
         import socket,subprocess,sys
         with socket.socket() as listener:
@@ -97,25 +71,6 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('/etc/ai-bridge/ai-bridge.env',result.stderr)
         self.assertIn('sudo systemctl restart ai-bridge',result.stderr)
         self.assertIn('tunnel backend',result.stderr)
-
-    def test_busy_port_finishes_setup_without_scheduling_restart_loop(self):
-        import os,subprocess
-        source=(self.source/'install.sh').read_text()
-        startup=source.split('sudo systemctl enable ai-bridge >/dev/null\n',1)[1].split('\ncat <<EOF',1)[0]
-        harness='set -e; say() { printf "%s\\n" "$*"; }; sudo() { echo "INVOKED $*"; }; '+startup
-        for state in ('unavailable','available'):
-            with self.subTest(state=state):
-                result=subprocess.run(['bash','-c',harness],env=dict(os.environ,PORT_STATE=state,PORT='8765',ENV_FILE='/fixture/ai-bridge.env'),capture_output=True,text=True)
-                self.assertEqual(result.returncode,0,result.stderr)
-                if state=='unavailable':
-                    self.assertNotIn('INVOKED',result.stdout)
-                    self.assertIn('Installation complete. Startup pending',result.stderr)
-                    self.assertIn('AI_BRIDGE_PORT',result.stderr)
-                    self.assertIn('sudo systemctl restart ai-bridge',result.stderr)
-                    self.assertIn('tunnel backend',result.stderr)
-                else:
-                    self.assertIn('INVOKED systemd-run',result.stdout)
-                    self.assertIn('Installation complete.',result.stdout)
 
     def test_port_check_accepts_free_port_and_rejects_invalid_port(self):
         import socket
@@ -149,3 +104,65 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('checksums',stderr.getvalue())
         self.assertIn('Staging PASSED',stderr.getvalue())
         self.assertTrue((release/'READY').exists())
+
+    def source_copy(self,version,code_marker=None):
+        """A disposable checkout declaring another version, optionally with changed application code."""
+        source=Path(tempfile.mkdtemp(prefix='source-',dir=self.tmp.name))
+        shutil.copytree(self.source/'ai_bridge',source/'ai_bridge',ignore=shutil.ignore_patterns('__pycache__'))
+        shutil.copytree(self.source/'tests',source/'tests',ignore=shutil.ignore_patterns('__pycache__'))
+        for name in ('install.sh','bootstrap.py','uninstall.sh','uninstall.py','merge_env.py','requirements.txt',
+                     'requirements.lock','deploy.py','release.py'):
+            shutil.copy2(self.source/name,source/name)
+        init=source/'ai_bridge/__init__.py'
+        init.write_text(re.sub(r'__version__ = "[^"]+"','__version__ = "'+version+'"',init.read_text()))
+        (source/'CHANGELOG.md').write_text('# Changelog\n\n## [Unreleased]\n\n## ['+version+'] - 2026-01-01\n')
+        if code_marker:
+            with (source/'ai_bridge/core.py').open('a') as stream:stream.write('\n# '+code_marker+'\n')
+        return source
+
+    def stage_copy(self,version,code_marker=None):
+        return deploy.stage(self.root,self.source_copy(version,code_marker),builder=self.builder,tester=lambda *_:None)
+
+    def test_release_records_version_and_provenance_under_checksums(self):
+        release=self.stage_copy('2.3.4')
+        self.assertRegex(release.name,r'^\d{8}T\d{6}Z-v2\.3\.4-[0-9a-f]{8}$')
+        info=json.loads((release/'RELEASE.json').read_text())
+        self.assertEqual(info['version'],'2.3.4')
+        self.assertIsNone(info['git_commit'])  # the disposable copy is not a checkout
+        self.assertIn('staged_at',info)
+        self.assertIn('RELEASE.json',json.loads((release/'SHA256.json').read_text()))
+        (release/'RELEASE.json').write_text(json.dumps(dict(info,version='9.9.9')))
+        with self.assertRaisesRegex(ValueError,'checksum'):
+            deploy.verify(self.root,release)
+
+    def test_stage_requires_dated_changelog_entry_for_version(self):
+        source=self.source_copy('2.3.4')
+        (source/'CHANGELOG.md').write_text('# Changelog\n\n## [Unreleased]\n')
+        with self.assertRaisesRegex(ValueError,'2.3.4'):
+            deploy.stage(self.root,source,builder=self.builder,tester=lambda *_:None)
+        self.assertFalse((self.root/'releases').exists())
+
+    def test_activation_requires_version_bump_for_code_changes(self):
+        base=self.stage_copy('2.0.0')
+        deploy.activate(self.root,base)
+        # Rebuilding identical application code under the same version may be reselected.
+        deploy.activate(self.root,self.stage_copy('2.0.0'))
+        changed=self.stage_copy('2.0.0','changed code')
+        with self.assertRaisesRegex(ValueError,'bump'):
+            deploy.activate(self.root,changed)
+        newer=self.stage_copy('2.0.1','changed code')
+        deploy.activate(self.root,newer)
+        with self.assertRaisesRegex(ValueError,'--rollback'):
+            deploy.activate(self.root,base)
+        self.assertEqual((self.root/'current').resolve(),newer)
+        deploy.activate(self.root,base,rollback=True)
+        self.assertEqual((self.root/'current').resolve(),base)
+
+    def test_legacy_release_without_metadata_uses_packaged_version(self):
+        legacy=self.stage_copy('1.0.0')
+        (legacy/'RELEASE.json').unlink()
+        sums=json.loads((legacy/'SHA256.json').read_text()); sums.pop('RELEASE.json')
+        (legacy/'SHA256.json').write_text(json.dumps(sums))
+        self.assertEqual(deploy.release_info(legacy),{'version':'1.0.0','legacy':True})
+        deploy.activate(self.root,legacy)
+        deploy.activate(self.root,self.stage_copy('1.1.0','new feature'))

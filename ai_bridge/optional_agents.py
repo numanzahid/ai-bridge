@@ -18,6 +18,7 @@ def _load():
 class OptionalAgents:
     AGENTS = ('claude', 'codex', 'cursor')
     PERMISSIONS = ('full', 'edit', 'readonly')
+    INTERACTIVE_AGENTS = ('claude', 'codex')  # mirrors agents.INTERACTIVE_AGENTS
 
     def __getattr__(self, name):
         if name.startswith('_'):

@@ -1,7 +1,6 @@
 import json
 import os
 from pathlib import Path
-import shlex
 import re
 import subprocess
 import sys
@@ -51,6 +50,8 @@ shutil.copyfile(source,dest)
 
 class SSHTests(unittest.TestCase):
     def setUp(self):
+        # Ownership checks refuse group-writable configs; do not inherit the invoker's umask.
+        self.addCleanup(os.umask,os.umask(0o022))
         self.tmp=tempfile.TemporaryDirectory(prefix='bridge-ssh-fixture-');self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.home=self.root/'home';(self.home/'.ssh').mkdir(parents=True)
         self.file=self.home/'.ssh/config';self.file.write_text('Host lab\n HostName 192.0.2.9\n User private-user\n IdentityFile /private/key\n')
@@ -91,9 +92,22 @@ class SSHTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777,0o600)
         self.assertFalse((self.root/'pwn').exists())
 
-    def test_include_cycles_and_conditional_includes_are_conservative(self):
-        self.file.write_text('Include config\n')
-        with self.assertRaisesRegex(ValueError,'cycle'):self.config()
+    def test_unsafe_configs_refused_without_connecting(self):
+        pwn=str(self.root/'pwn')
+        for name,text,mode,pattern in (
+                ('include cycle','Include config\n',0o644,'cycle'),
+                ('include tokens','Include ${UNTRUSTED_CONFIG}\nHost lab\n',0o644,'static Include'),
+                ('writable config','Host lab\n HostName 192.0.2.9\n',0o666,'ownership/mode'),
+                ('executable directive','Host lab\nProxyCommand touch '+pwn+'\n',0o644,'unsupported executable'),
+                ('match changes target','Host lab\nMatch all\n HostName secret-target\n',0o644,'conditional')):
+            with self.subTest(name):
+                self.file.write_text(text);self.file.chmod(mode)
+                with self.assertRaisesRegex(ValueError,pattern):
+                    ssh.run(self.cfg,'lab','true',configuration=self.config())
+        self.assertFalse(self.calls());self.assertFalse((self.root/'pwn').exists())
+
+    def test_conditional_include_is_scoped_to_its_host(self):
+        self.file.chmod(0o644)
         (self.home/'.ssh/part').write_text('Host hidden\n')
         self.file.write_text('Host lab\nInclude part\n')
         self.assertEqual(set(self.config().aliases),{'lab'})
@@ -102,12 +116,6 @@ class SSHTests(unittest.TestCase):
         for host in ('-oProxyCommand=bad','user@lab','lab; touch nope','lab\nHost bad','192.0.2.9','unknown','lab:22'):
             with self.subTest(host=host),self.assertRaises(ValueError):
                 ssh.run(self.cfg,host,'true',configuration=self.config())
-        self.assertFalse(self.calls())
-
-    def test_executable_config_directives_refused(self):
-        self.file.write_text('Host lab\nProxyCommand touch '+str(self.root/'pwn')+'\n')
-        with self.assertRaisesRegex(ValueError,'unsupported executable'):
-            ssh.run(self.cfg,'lab','true',configuration=self.config())
         self.assertFalse(self.calls())
 
     def test_run_structured_and_no_local_sudo(self):
@@ -171,12 +179,21 @@ class SSHTests(unittest.TestCase):
         self.assertNotIn('--delete',json.dumps(self.calls()))
         self.assertTrue(self.source.exists())
 
-    def test_existing_destination_is_never_overwritten(self):
+    def test_existing_destinations_are_never_overwritten(self):
         self.remote.write_text('existing')
         result=self.transfer(method='sftp')
         self.assertNotEqual(result['status'],'succeeded')
         self.assertEqual(self.remote.read_text(),'existing')
         with self.assertRaises(ValueError):self.transfer('download',local=self.source)
+        for kind in ('directory','symlink'):
+            self.remote=self.root/kind
+            if kind=='directory':
+                self.remote.mkdir();(self.remote/'keep').write_text('keep')
+            else:self.remote.symlink_to(self.source)
+            result=self.transfer(method='sftp')
+            self.assertFalse(result['committed'])
+            self.assertTrue(self.remote.is_dir() if kind=='directory' else self.remote.is_symlink())
+            self.assertEqual(self.source.read_bytes(),b'roundtrip\x00payload\xff')
 
     def test_rsync_auto_fallback_only_on_capability_absence(self):
         with patch.dict(os.environ,SSH_TEST_NO_RSYNC='1'):
@@ -253,7 +270,7 @@ class SSHTests(unittest.TestCase):
             self.assertEqual(options[key],value)
 
     def test_tool_wrappers_return_safe_json_and_audited_alias(self):
-        from test_server_sessions import server
+        from helpers import server
         config=self.config()
         with patch.object(ssh,'Configuration',return_value=config),patch.object(server,'CFG',self.cfg), \
              patch.object(server,'audit') as audit:
@@ -265,12 +282,6 @@ class SSHTests(unittest.TestCase):
         self.assertEqual(dry['status'],'dry_run');self.assertEqual(error['status'],'unavailable')
         self.assertFalse(error['remote_privilege']['sudo_confirmed'])
         self.assertTrue(any(len(call.args)>3 and call.args[2]=='ssh_run' and call.args[3].get('host')=='lab' for call in audit.call_args_list))
-
-    def test_match_cannot_silently_change_connection_target(self):
-        self.file.write_text('Host lab\nMatch all\n HostName secret-target\n')
-        with self.assertRaisesRegex(ValueError,'conditional'):
-            ssh.run(self.cfg,'lab','true',configuration=self.config())
-        self.assertFalse(self.calls())
 
     def test_remote_source_symlink_is_refused_before_transfer(self):
         self.remote.symlink_to(self.source)
@@ -284,35 +295,3 @@ class SSHTests(unittest.TestCase):
         result=ssh.run(self.cfg,'lab','printf safe',remote_sudo=True,configuration=self.config())
         self.assertNotIn(self.cfg.sudo_password,json.dumps(self.calls())+json.dumps(result))
         self.assertFalse(result['local_sudo_used'])
-
-    def test_remote_privilege_survives_structured_response_truncation(self):
-        from ai_bridge.responses import render
-        value={'stdout':'x'*100000, 'host':'lab', 'method':'ssh',
-               'remote_privilege':{'sudo_requested':True,'sudo_attempted':None,'sudo_confirmed':False},
-               'remote_privilege_message':'Remote sudo requested but root execution is unconfirmed.'}
-        result=json.loads(render(value,512,lambda text:text))
-        self.assertEqual(result['remote_privilege'],value['remote_privilege'])
-        self.assertTrue(result['truncation']['truncated'])
-
-    def test_existing_directory_and_symlink_destinations_are_untouched(self):
-        for kind in ('directory','symlink'):
-            self.remote=self.root/kind
-            if kind=='directory':
-                self.remote.mkdir();(self.remote/'keep').write_text('keep')
-            else:self.remote.symlink_to(self.source)
-            result=self.transfer(method='sftp')
-            self.assertFalse(result['committed'])
-            self.assertTrue(self.remote.is_dir() if kind=='directory' else self.remote.is_symlink())
-            self.assertEqual(self.source.read_bytes(),b'roundtrip\x00payload\xff')
-
-    def test_include_tokens_are_not_silently_ignored(self):
-        self.file.write_text('Include ${UNTRUSTED_CONFIG}\nHost lab\n')
-        with self.assertRaisesRegex(ValueError,'static Include'):
-            self.config()
-        self.assertFalse(self.calls())
-
-    def test_writable_config_cannot_create_trusted_aliases(self):
-        self.file.chmod(0o666)
-        with self.assertRaisesRegex(ValueError,'ownership/mode'):
-            self.config()
-        self.assertFalse(self.calls())

@@ -134,3 +134,13 @@ class HostConfigTests(unittest.IsolatedAsyncioTestCase):
         (folder / 'typo.md').write_text('Unknown tool')
         with self.assertRaisesRegex(ValueError, 'unknown tools'):
             HostConfig(self.root).register(MCPServer('test'), lambda text: text)
+
+    async def test_retired_tool_override_warns_instead_of_failing(self):
+        import contextlib, io
+        folder = self.root / 'tool-descriptions'
+        folder.mkdir()
+        (folder / 'agent_wait.md').write_text('Old guidance')
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            HostConfig(self.root).register(MCPServer('test'), lambda text: text)
+        self.assertIn('agent_wait was replaced by job_status', errors.getvalue())

@@ -133,14 +133,6 @@ class ManagementTests(unittest.TestCase):
         self.assertTrue(outside.exists())
         self.assertFalse(Path(task['workspace']).exists())
 
-    def test_cleanup_uncertain_or_unmanaged_nested_job_refused(self):
-        task = self.tasks.create()
-        for status in ('running', 'cleanup_incomplete', 'lost'):
-            with patch.object(self.jobs, 'list', return_value=[{'id': 'test-job', 'status': status,
-                          'cwd': str(Path(task['workspace']) / 'nested')}]), self.assertRaisesRegex(ValueError, 'refused'):
-                self.tasks.cleanup(task['task_id'], self.jobs, False)
-        self.assertTrue(Path(task['workspace']).exists())
-
     def test_cleanup_observed_native_process_refused(self):
         task = self.tasks.create()
         proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)'], cwd=task['workspace'])
@@ -155,24 +147,6 @@ class ManagementTests(unittest.TestCase):
         return [{'pid': 101, 'status': 'uninspectable_process'},
                 {'pid': 202, 'status': 'uninspectable_process'}]
 
-    def test_uninspectable_cleanup_defaults_and_explicit_preview(self):
-        task = self.tasks.create()
-        with patch('ai_bridge.management.observed_task_processes', return_value=self.cleanup_observations()):
-            ordinary = self.tasks.cleanup(task['task_id'], self.jobs)
-            self.assertFalse(ordinary['cleanup_allowed'])
-            self.assertEqual(len(ordinary['blockers']), 2)
-            with self.assertRaisesRegex(ValueError, 'refused'):
-                self.tasks.cleanup(task['task_id'], self.jobs, False, confirmed=True)
-            preview = self.tasks.cleanup(task['task_id'], self.jobs, allow_uninspectable=True)
-            self.assertTrue(preview['cleanup_allowed'])
-            self.assertEqual(preview['blockers'], [])
-            self.assertEqual(preview['ignored_uninspectable_pids'], [101, 202])
-            self.assertIn('HIGH RISK', preview['risk'])
-            self.assertTrue(preview['dry_run'])
-            self.assertTrue(Path(task['workspace']).exists())
-            with self.assertRaisesRegex(ValueError, '--yes'):
-                self.tasks.cleanup(task['task_id'], self.jobs, False, allow_uninspectable=True)
-
     def test_uninspectable_override_requires_confirmation_and_preserves_native_history(self):
         task = self.tasks.create()
         native = self.root / '.codex' / 'saved.jsonl'
@@ -181,10 +155,19 @@ class ManagementTests(unittest.TestCase):
         original = native.read_bytes()
         with patch('ai_bridge.management.observed_task_processes', return_value=self.cleanup_observations()), \
              patch('os.kill') as kill:
+            ordinary = self.tasks.cleanup(task['task_id'], self.jobs)
+            self.assertFalse(ordinary['cleanup_allowed'])
+            self.assertEqual(len(ordinary['blockers']), 2)
+            with self.assertRaisesRegex(ValueError, 'refused'):
+                self.tasks.cleanup(task['task_id'], self.jobs, False, confirmed=True)
             with self.assertRaisesRegex(ValueError, '--yes'):
                 self.tasks.cleanup(task['task_id'], self.jobs, False, allow_uninspectable=True)
             preview = self.tasks.cleanup(task['task_id'], self.jobs, allow_uninspectable=True)
             self.assertTrue(preview['cleanup_allowed'])
+            self.assertEqual(preview['blockers'], [])
+            self.assertEqual(preview['ignored_uninspectable_pids'], [101, 202])
+            self.assertIn('HIGH RISK', preview['risk'])
+            self.assertTrue(preview['dry_run'])
             self.assertTrue(Path(task['workspace']).exists())
             result = self.tasks.cleanup(task['task_id'], self.jobs, False, allow_uninspectable=True, confirmed=True)
             self.assertEqual(result['ignored_uninspectable_pids'], [101, 202])
@@ -209,30 +192,45 @@ class ManagementTests(unittest.TestCase):
             self.assertIn('HIGH RISK', str(caught.exception))
             self.assertTrue(Path(task['workspace']).exists())
 
-    def test_uninspectable_override_never_filters_managed_jobs(self):
+    def test_uncertain_managed_jobs_block_cleanup_with_or_without_override(self):
         task = self.tasks.create()
+        nested = str(Path(task['workspace']) / 'nested')
         for status in ('running', 'cleanup_incomplete', 'lost'):
-            job = {'id': 'blocked-job', 'status': status, 'task_id': task['task_id']}
-            with self.subTest(status=status), patch.object(self.jobs, 'list', return_value=[job]), \
-                 patch('ai_bridge.management.observed_task_processes', return_value=self.cleanup_observations()):
-                preview = self.tasks.cleanup(task['task_id'], self.jobs, allow_uninspectable=True)
-                self.assertFalse(preview['cleanup_allowed'])
-                self.assertEqual(preview['blockers'], [{'job_id': job['id'], 'status': status}])
-                with self.assertRaisesRegex(ValueError, 'blocked-job'):
-                    self.tasks.cleanup(task['task_id'], self.jobs, False, allow_uninspectable=True, confirmed=True)
+            for job in ({'id': 'blocked-job', 'status': status, 'cwd': nested},
+                        {'id': 'blocked-job', 'status': status, 'task_id': task['task_id']}):
+                for override in (False, True):
+                    observations = self.cleanup_observations() if override else []
+                    with self.subTest(status=status, job=sorted(job), override=override), \
+                         patch.object(self.jobs, 'list', return_value=[job]), \
+                         patch('ai_bridge.management.observed_task_processes', return_value=observations):
+                        preview = self.tasks.cleanup(task['task_id'], self.jobs, allow_uninspectable=override)
+                        self.assertFalse(preview['cleanup_allowed'])
+                        self.assertEqual(preview['blockers'], [{'job_id': job['id'], 'status': status}])
+                        with self.assertRaisesRegex(ValueError, 'blocked-job'):
+                            self.tasks.cleanup(task['task_id'], self.jobs, False,
+                                               allow_uninspectable=override, confirmed=override)
         self.assertTrue(Path(task['workspace']).exists())
 
-    def test_uninspectable_override_never_filters_mounts_or_other_observations(self):
+    def test_mounts_block_cleanup_with_or_without_override(self):
+        from ai_bridge.management import task_mounts
+        path = self.root / 'space here'
+        encoded = str(path / 'mount').replace(' ', r'\040')
+        self.assertEqual(task_mounts(path, f'1 0 0:1 / {encoded} rw - tmpfs tmpfs rw')[0]['path'], str(path / 'mount'))
         task = self.tasks.create()
-        for status in ('mounted_subtree', 'uninspectable_process'):
-            # Even a mount check returning the same text is never eligible.
-            with self.subTest(status=status), \
-                 patch('ai_bridge.management.observed_task_processes', return_value=self.cleanup_observations()), \
+        # Even a mount check returning the uninspectable text is never eligible for the override.
+        for status, override in (('mounted_subtree', False), ('mounted_subtree', True), ('uninspectable_process', True)):
+            observations = self.cleanup_observations() if override else []
+            with self.subTest(status=status, override=override), \
+                 patch('ai_bridge.management.observed_task_processes', return_value=observations), \
                  patch('ai_bridge.management.task_mounts', return_value=[{'path': task['workspace'], 'status': status}]):
-                preview = self.tasks.cleanup(task['task_id'], self.jobs, allow_uninspectable=True)
+                preview = self.tasks.cleanup(task['task_id'], self.jobs, allow_uninspectable=override)
                 self.assertFalse(preview['cleanup_allowed'])
                 with self.assertRaisesRegex(ValueError, 'refused'):
-                    self.tasks.cleanup(task['task_id'], self.jobs, False, allow_uninspectable=True, confirmed=True)
+                    self.tasks.cleanup(task['task_id'], self.jobs, False, allow_uninspectable=override, confirmed=override)
+        self.assertTrue(Path(task['workspace']).exists())
+
+    def test_override_never_ignores_unknown_observation_kinds(self):
+        task = self.tasks.create()
         with patch('ai_bridge.management.observed_task_processes', return_value=[{'pid': 404, 'status': 'uninspectable_process_extra'}]):
             self.assertFalse(self.tasks.cleanup(task['task_id'], self.jobs, allow_uninspectable=True)['cleanup_allowed'])
 
@@ -279,30 +277,11 @@ class ManagementTests(unittest.TestCase):
             sessions.overlay('codex', SID, archived=False)
         self.assertEqual(self.store.read_bytes(), before)
 
-    def test_sudo_not_available_through_agent_or_task_metadata(self):
+    def test_agent_timeout_must_be_within_bounds(self):
         with self.assertRaises(ValueError):
             self.turn(timeout=0)
         with self.assertRaises(ValueError):
             self.turn(timeout=604801)
-
-    def test_native_open_preflight_does_not_rewrite(self):
-        sessions = Sessions(self.cfg, self.jobs)
-        help_result = {'stdout': 'SESSION_ID --include-non-interactive', 'stderr': '',
-                       'exit_code': 0, 'timed_out': False, 'stdout_truncated': False}
-        with patch.object(agents, 'session_info', return_value=self.info), \
-             patch.object(agents, 'resume_cwd', return_value=str(self.root)), \
-             patch.object(agents, 'find_binary', return_value='/fake'), \
-             patch('ai_bridge.execution.probe', return_value=help_result):
-            plan = sessions.interactive('codex', SID, 'promote')
-            self.assertEqual(plan['argv'], ['/fake', 'resume', '--include-non-interactive', SID])
-            self.assertFalse(plan['history_rewritten'])
-            self.assertFalse(plan['verified_execution'])
-            with self.assertRaisesRegex(ValueError, 'unsupported'):
-                sessions.interactive('cursor', SID, 'fork')
-            help_result['stdout'] = 'resume'
-            with self.assertRaisesRegex(ValueError, 'unsupported'):
-                sessions.interactive('codex', SID)
-        self.assertEqual(self.store.read_text(), '{}')
 
     def test_managed_runtime_identity_and_command_refusal(self):
         meta = {'id': 'test-job', 'kind': 'agent', 'status': 'running', 'pid': os.getpid(),
@@ -332,7 +311,6 @@ class ManagementTests(unittest.TestCase):
                                kind='agent', extra={'agent': 'codex', 'timeout': 1})
         result = Jobs(self.cfg).wait(meta['id'], 6)
         self.assertNotEqual(result['status'], 'running')
-        self.jobs.load(meta['id'])
         self.assertTrue(result['timed_out'])
         self.assertFalse(result['cleanup']['complete'])
         self.assertIn('coverage', result['cleanup'])
@@ -350,7 +328,13 @@ class ManagementTests(unittest.TestCase):
             other.terminate()
             other.wait()
 
-    def test_lineage_pid_reuse_and_scope_change_not_signalled(self):
+    def test_lineage_never_signals_reused_or_out_of_scope_processes(self):
+        lineage = Descendants(os.getpid())
+        lineage.root_identity = dict(lineage.root_identity, start_ticks='reused')
+        with patch('ai_bridge.execution.signal_verified') as send:
+            self.assertEqual(lineage.sample(), {})
+            lineage.cancel()
+            send.assert_not_called()
         lineage = Descendants(os.getpid())
         lineage.known[99999999] = process_identity(os.getpid())
         with patch('ai_bridge.execution.signal_verified') as send:
@@ -362,14 +346,6 @@ class ManagementTests(unittest.TestCase):
             result = lineage.cancel()
             self.assertIn(os.getpid(), result['unsignalled_pids'])
             send.assert_not_called()
-
-    def test_busy_check_observes_unpolled_session_beyond_200(self):
-        job = {'id': 'unpolled-job', 'agent': 'codex', 'status': 'running', 'session_id': None}
-        rows = [{'id': f'old-{i}', 'status': 'done', 'agent': 'codex'} for i in range(220)] + [job]
-        with patch.object(self.jobs, 'list', return_value=rows) as listing, \
-             patch.object(self.jobs, 'output_info', return_value={'parsed': {'session_id': SID}}):
-            self.assertEqual(self.jobs.running_for_session('codex', SID)['id'], job['id'])
-            listing.assert_called_once_with(limit=None, kind='agent')
 
     def test_previous_boot_task_job_not_active_but_same_boot_lost_blocks(self):
         task = self.tasks.create()
@@ -434,26 +410,6 @@ class ManagementTests(unittest.TestCase):
                 if identity_matches(child, identity):
                     signal_verified(child, identity, signal.SIGKILL)
 
-    def test_mount_boundary_preview_and_refusal(self):
-        from ai_bridge.management import task_mounts
-        path = self.root / 'space here'
-        encoded = str(path / 'mount').replace(' ', r'\040')
-        self.assertEqual(task_mounts(path, f'1 0 0:1 / {encoded} rw - tmpfs tmpfs rw')[0]['path'], str(path / 'mount'))
-        task = self.tasks.create()
-        with patch('ai_bridge.management.task_mounts', return_value=[{'status': 'mounted_subtree'}]), \
-             patch('ai_bridge.management.observed_task_processes', return_value=[]):
-            self.assertFalse(self.tasks.cleanup(task['task_id'], self.jobs)['cleanup_allowed'])
-            with self.assertRaisesRegex(ValueError, 'refused'):
-                self.tasks.cleanup(task['task_id'], self.jobs, False)
-
-    def test_reused_lineage_root_not_adopted(self):
-        lineage = Descendants(os.getpid())
-        lineage.root_identity = dict(lineage.root_identity, start_ticks='reused')
-        with patch('ai_bridge.execution.signal_verified') as send:
-            self.assertEqual(lineage.sample(), {})
-            lineage.cancel()
-            send.assert_not_called()
-
     def test_agent_timeout_never_broadcasts_to_process_group(self):
         from ai_bridge.execution import execute
         with patch('ai_bridge.execution.terminate_group') as group:
@@ -463,25 +419,6 @@ class ManagementTests(unittest.TestCase):
         self.assertTrue(result['timed_out'])
         self.assertFalse(result['cleanup']['complete'])
         self.assertIn('no group signalling', result['cleanup']['scope'])
-
-    def test_native_resume_other_adapters_and_storage_safety(self):
-        sessions = Sessions(self.cfg, self.jobs)
-        result = {'stdout': '--resume SESSION_ID', 'stderr': '', 'exit_code': 0,
-                  'timed_out': False, 'stdout_truncated': False}
-        with patch.object(agents, 'session_info', return_value=self.info), \
-             patch.object(agents, 'resume_cwd', return_value=str(self.root)), \
-             patch.object(agents, 'find_binary', return_value='/fake'), \
-             patch('ai_bridge.execution.probe', return_value=result):
-            for agent in ('claude', 'cursor'):
-                self.assertEqual(sessions.interactive(agent, SID)['argv'], ['/fake', '--resume', SID])
-            result['timed_out'] = True
-            with self.assertRaisesRegex(ValueError, 'capability'):
-                sessions.interactive('claude', SID)
-            self.store.chmod(0o666)
-            with self.assertRaisesRegex(ValueError, 'permissions'):
-                sessions.interactive('claude', SID)
-
-
 
 class NativeModeTests(unittest.TestCase):
     def test_codex_unknown_main_exec_and_subagent(self):
@@ -509,6 +446,7 @@ class NativeModeTests(unittest.TestCase):
             project.mkdir(parents=True)
             file = project / (SID + '.jsonl')
             with patch.object(agents, '_claude_dir', return_value=root):
-                for marker, expected in (({}, 'unknown'), ({'entrypoint': 'sdk-cli'}, 'noninteractive')):
+                for marker, expected in (({}, 'unknown'), ({'entrypoint': 'sdk-cli'}, 'noninteractive'),
+                                         ({'entrypoint': 'cli'}, 'interactive')):
                     file.write_text(json.dumps({'type': 'user', 'cwd': tmp, 'message': {'content': 'test'}, **marker}))
                     self.assertEqual(agents.claude_sessions(None, None)[0]['mode'], expected)

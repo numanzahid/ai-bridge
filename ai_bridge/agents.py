@@ -14,6 +14,7 @@ import shutil
 import re
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -171,6 +172,21 @@ def build_argv(
     raise ValueError(f"Unknown agent: {agent}")
 
 
+INTERACTIVE_AGENTS = ("claude", "codex")
+
+
+def build_interactive_argv(agent: str, binary: str, prompt: str, session_id: str | None, permission: str,
+                           model: str | None, name: str | None = None, remote: bool = False) -> list[str]:
+    """Run one turn in a normal native chat (Claude background session / Codex daemon thread)."""
+    if agent not in INTERACTIVE_AGENTS:
+        raise ValueError(f"{agent} supports exec mode only.")
+    spec = {"agent": agent, "binary": binary, "prompt": _safe_prompt(prompt), "session_id": session_id,
+            "permission": permission, "model": model, "name": name, "remote": remote}
+    if agent == "claude":
+        spec["extra"] = shlex.split(os.environ.get("AI_BRIDGE_CLAUDE_EXTRA_ARGS", ""))
+    return [sys.executable, str(Path(__file__).with_name("interactive.py")), json.dumps(spec)]
+
+
 # ---------------------------------------------------------------------------
 # Output parsing (stream-json for claude/cursor, JSONL events for codex)
 # ---------------------------------------------------------------------------
@@ -217,6 +233,7 @@ def parse_output(agent: str, log: str) -> dict:
     messages: list[str] = []
     raw_other: list[str] = []
     stats: dict = {}
+    native: dict = {}
 
     for line in log.splitlines():
         line = line.strip()
@@ -230,6 +247,9 @@ def parse_output(agent: str, log: str) -> dict:
         if not isinstance(ev, dict):
             continue
         t = ev.get("type")
+        if t == "bridge.native":
+            native.update({k: v for k, v in ev.items() if k != "type"})
+            continue
 
         if agent in ("claude", "cursor"):
             session_id = ev.get("session_id") or ev.get("chatId") or session_id
@@ -300,6 +320,7 @@ def parse_output(agent: str, log: str) -> dict:
         "progress": progress,
         "other": raw_other,
         "stats": stats,
+        "native": native,
     }
 
 
@@ -375,6 +396,9 @@ def claude_sessions(cwd: str | None, limit: int | None) -> list[dict]:
                 continue
             if e.get('entrypoint') == 'sdk-cli' or e.get('promptSource') == 'sdk':
                 mode, native_source = 'noninteractive', 'sdk-cli'
+            elif e.get('entrypoint') == 'cli' and mode == 'unknown':
+                # Terminal and background (--bg) sessions; listed by `claude --resume`.
+                mode, native_source = 'interactive', 'cli'
             scwd = scwd or e.get("cwd")
             if e.get("type") == "user" and first is None and not e.get("isMeta"):
                 first = _claude_user_text(e)

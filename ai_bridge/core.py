@@ -46,6 +46,8 @@ class Config:
     retention_days: int = 0
     audit_bytes: int = 2097152
     tasks_dir: Path = Path.home() / ".ai-bridge-tasks"
+    # Opt-in (AI_BRIDGE_TRUST_TASKS=1): mark bridge-created task folders trusted for agent CLIs.
+    trust_tasks: bool = False
 
     @classmethod
     def load(cls) -> "Config":
@@ -68,6 +70,7 @@ class Config:
             allowed_hosts=[h.strip() for h in _env("AI_BRIDGE_ALLOWED_HOSTS").split(",") if h.strip()],
             allowed_origins=[h.strip() for h in _env("AI_BRIDGE_ALLOWED_ORIGINS").split(",") if h.strip()],
             tasks_dir=Path(_env("AI_BRIDGE_TASKS_DIR") or Path.home() / ".ai-bridge-tasks"),
+            trust_tasks=_env("AI_BRIDGE_TRUST_TASKS", "0") == "1",
             default_cwd=_env("AI_BRIDGE_DEFAULT_CWD") or str(Path.home()),
             state_dir=state_dir,
             max_output_chars=int(_env("AI_BRIDGE_MAX_OUTPUT_CHARS", "30000")),
@@ -358,6 +361,9 @@ class Jobs:
                    'sudo': sudo, 'password': self.cfg.sudo_password if sudo else None,
                    'log_bytes': self.cfg.job_log_bytes, 'agent': meta.get('agent'),
                    'timeout': meta.get('timeout'),
+                   # Interactive agent turns hand off to native supervisors (Claude's background
+                   # service, the Codex daemon) that must outlive the job and never be signalled.
+                   'track_children': meta.get('mode') != 'interactive',
                    'provenance_job': {k: meta.get(k) for k in
                        ('id', 'kind', 'agent', 'invocation_origin', 'requested_session_id')}}
         import selectors

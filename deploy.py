@@ -15,6 +15,8 @@ import subprocess
 import sys
 import venv
 
+import release as versioning
+
 
 @contextmanager
 def deployment_lock(root):
@@ -27,6 +29,8 @@ def deployment_lock(root):
 
 def checksums(release):
     result={}
+    if (release/'RELEASE.json').is_file():
+        result['RELEASE.json']=hashlib.sha256((release/'RELEASE.json').read_bytes()).hexdigest()
     for directory in ('app','venv'):
         for path in sorted((release/directory).rglob('*')):
             if '__pycache__' in path.parts or path.suffix == '.pyc':
@@ -103,13 +107,42 @@ def test_release(release, source):
         subprocess.run([str(release/'venv/bin/python'),'-m','pip','freeze'],stdout=log,check=True,env=env)
 
 
+def git_state(source):
+    # Read-only provenance; a missing git or non-checkout source records unknown.
+    def git(*args):
+        result=subprocess.run(['git','-C',str(source),*args],capture_output=True,text=True)
+        if result.returncode:
+            raise OSError(result.stderr.strip())
+        return result.stdout.strip()
+    try:
+        return git('rev-parse','HEAD'),bool(git('status','--porcelain'))
+    except OSError:
+        return None,None
+
+
+def release_info(release):
+    """Version metadata for a release; legacy releases fall back to their packaged source."""
+    path=release/'RELEASE.json'
+    if path.is_file():
+        return json.loads(path.read_text())
+    try:
+        return {'version':versioning.text(versioning.parse((release/'app/ai_bridge/__init__.py').read_text())),'legacy':True}
+    except (OSError,ValueError):
+        return {'version':None,'legacy':True}
+
+
 def stage(root, source, python=sys.executable, builder=build_environment, tester=test_release):
     root,source=Path(root).absolute(),Path(source).resolve()
-    progress('Preparing isolated release; waiting for deployment lock if another stage is running.')
+    version=versioning.check(source)
+    commit,dirty=git_state(source)
+    progress(f'Preparing release {version} from commit {commit or "unknown"}; waiting for deployment lock if another stage is running.')
+    if dirty:
+        progress('WARNING: source has uncommitted changes; the release records git_dirty=true and cannot be traced to a commit.')
     with deployment_lock(root):
         releases=root/'releases'
         releases.mkdir(mode=0o700,exist_ok=True)
-        release=releases/(datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+secrets.token_hex(4))
+        staged=datetime.datetime.now(datetime.timezone.utc)
+        release=releases/(staged.strftime('%Y%m%dT%H%M%SZ')+'-v'+version+'-'+secrets.token_hex(4))
         release.mkdir(mode=0o700)
         progress(f'Copying source and test fixtures into {release}')
         # Build at its FINAL path; venv scripts contain absolute paths.
@@ -119,11 +152,13 @@ def stage(root, source, python=sys.executable, builder=build_environment, tester
         validation.mkdir()
         shutil.copytree(source/'tests',validation/'tests',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         (validation/'ai_bridge').symlink_to(release/'app/ai_bridge', target_is_directory=True)
-        for name in ('install.sh', 'bootstrap.py', 'uninstall.sh', 'uninstall.py', 'merge_env.py','requirements.txt','requirements.lock','deploy.py'):
+        for name in ('install.sh', 'bootstrap.py', 'uninstall.sh', 'uninstall.py', 'merge_env.py','requirements.txt','requirements.lock','deploy.py','release.py','CHANGELOG.md'):
             shutil.copy2(source/name,validation/name)
         builder(release,source,python)
         tester(release,source)
-        progress('Recording application and environment checksums.')
+        progress('Recording release metadata, application and environment checksums.')
+        (release/'RELEASE.json').write_text(json.dumps({'version':version,'git_commit':commit,'git_dirty':dirty,
+                                                         'staged_at':staged.isoformat(timespec='seconds')},indent=2)+'\n')
         (release/'SHA256.json').write_text(json.dumps(checksums(release),indent=2)+'\n')
         (release/'READY').write_text('Staged tests passed. Selection does not restart the service.\n')
         progress(f'Staging PASSED. Release ready: {release}. Activation/restart remain separate.')
@@ -142,7 +177,24 @@ def verify(root, release):
     return release
 
 
-def activate(root, release):
+def app_checksums(release):
+    return {k:v for k,v in json.loads((release/'SHA256.json').read_text()).items() if k.startswith('app/')}
+
+
+def check_upgrade(candidate, active):
+    """Forward activation must raise the version, or reselect identical application code."""
+    new,old=release_info(candidate)['version'],release_info(active)['version']
+    if new is None or old is None:
+        return
+    new_key,old_key=versioning.parse(f'__version__ = "{new}"'),versioning.parse(f'__version__ = "{old}"')
+    if new_key<old_key:
+        raise ValueError(f'Release {new} is older than active {old}; use --rollback to select an older release.')
+    if new_key==old_key and app_checksums(candidate)!=app_checksums(active):
+        raise ValueError(f'Release {new} changes application code but keeps active version {old}; '
+                         'bump it with release.py and stage again.')
+
+
+def activate(root, release, rollback=False):
     root=Path(root).absolute()
     with deployment_lock(root):
         release=verify(root,release)
@@ -150,6 +202,8 @@ def activate(root, release):
         if current.exists() and not current.is_symlink():
             raise ValueError('current must be absent or a release symlink.')
         old=os.readlink(current) if current.is_symlink() else None
+        if old and not rollback and (root/'current').resolve().is_dir():
+            check_upgrade(release,(root/'current').resolve())
         if old:
             previous=root/('.previous-'+secrets.token_hex(4))
             previous.symlink_to(old)
@@ -184,7 +238,7 @@ def main():
         release=Path(args.release) if args.release else ((args.root/'previous').resolve() if args.action=='rollback' else None)
         if release is None:
             parser.error('release path is required')
-        result=verify(args.root,release) if args.action=='verify' else activate(args.root,release)
+        result=verify(args.root,release) if args.action=='verify' else activate(args.root,release,rollback=args.action=='rollback')
     print(result)
 
 

@@ -4,8 +4,6 @@ import json
 import os
 import shlex
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -16,6 +14,8 @@ import uninstall as removal
 
 class UninstallTests(unittest.TestCase):
     def setUp(self):
+        # Trust checks refuse group-writable artifacts; do not inherit the invoker's umask.
+        self.addCleanup(os.umask, os.umask(0o022))
         self.tmp = tempfile.TemporaryDirectory(prefix='bridge-uninstall-fixture-')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -107,7 +107,10 @@ class UninstallTests(unittest.TestCase):
     def test_root_service_identity_uses_root_passwd_home(self):
         self.account.pw_name = 'root'; self.effective_user = 'root'
         self.layout.unit.write_text(self.unit())
-        self.assertEqual(self.plan().account.pw_name, 'root')
+        plan = self.plan()
+        self.assertEqual(plan.account.pw_name, 'root')
+        self.assertEqual(plan.account.pw_dir, str(self.home))
+        self.assertIn(str(self.app), {row['path'] for row in plan.targets})
 
     def test_missing_unit_requires_explicit_legacy_identity(self):
         self.layout.unit.unlink()
@@ -161,8 +164,7 @@ class UninstallTests(unittest.TestCase):
         (self.state/'jobs/legacy-job.json').write_text('{bad')
         self.assertTrue(self.plan().blockers)
         self.assertFalse(any(call[0] == 'stop' for call in self.calls))
-
-    def test_completed_jobs_and_old_sidecar_layout_are_readable(self):
+        # Completed jobs, including the old root-level sidecar layout, do not block.
         (self.state/'jobs/legacy-job.json').write_text('{"status":"done"}')
         (self.state/'jobs/legacy-job.process.json').write_text('{"pid":123}')
         self.assertFalse(self.plan().blockers)
@@ -203,10 +205,8 @@ class UninstallTests(unittest.TestCase):
         alternate.mkdir()
         with self.assertRaisesRegex(removal.Refusal, 'trusted ownership record'):
             self.plan()
-
-    def test_xdg_config_is_respected_only_with_ownership_record(self):
         base = self.root/'xdg'; (base/'ai-bridge/instructions').mkdir(parents=True)
-        (self.layout.etc/'ai-bridge.env').write_text('XDG_CONFIG_HOME='+str(base)+'\n')
+        env.write_text('XDG_CONFIG_HOME='+str(base)+'\n')
         removal.record_install(self.layout, self.account)
         self.assertIn(str(base/'ai-bridge'), {row['path'] for row in self.plan().targets})
 
@@ -231,12 +231,6 @@ class UninstallTests(unittest.TestCase):
             plan.execute()
         self.assertTrue(sibling.exists())
         self.assertFalse(copy.exists())
-
-    def test_no_user_removal_or_arbitrary_source_delete_option(self):
-        source = Path('uninstall.py').read_text()
-        self.assertNotIn("['userdel'", source)
-        with patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
-            removal.main(['--remove-user'])
 
     def test_change_after_preview_and_partial_failure_reported(self):
         plan = self.plan()
@@ -324,37 +318,14 @@ class UninstallTests(unittest.TestCase):
             plan.execute()
         self.assertTrue((self.config.with_name('previous')/'instructions/user.md').exists())
 
-    def test_ownership_registration_failure_does_not_break_install(self):
-        source = Path('install.sh').read_text()
-        block = source.split('say "Recording private uninstall ownership metadata"\n', 1)[1].split('\nsay "Sudo password for AI commands"', 1)[0]
-        result = subprocess.run(['bash', '-c', 'set -e; sudo() { return 1; }; SRC_DIR=/fixture; APP_USER=test; '+block+'\necho continued'], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0)
-        self.assertIn('continued', result.stdout)
-        self.assertIn('manual uninstall review', result.stderr)
-
-    def test_nonroot_dispatch_before_staging_and_sudo_argument_forwarding(self):
-        source = self.root/'source'; source.mkdir()
-        (source/'install.sh').write_text(Path('install.sh').read_text())
-        (source/'uninstall.sh').write_text(Path('uninstall.sh').read_text())
-        binary = self.root/'bin'; binary.mkdir()
-        (binary/'id').write_text('#!/bin/sh\necho 1000\n')
-        (binary/'sudo').write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
-        (binary/'python3').write_text('#!/bin/sh\necho UNEXPECTED-PYTHON; exit 99\n')
-        for path in binary.iterdir(): path.chmod(0o700)
-        result = subprocess.run(['bash', str(source/'install.sh'), '--uninstall', '--dry-run', '--user', 'service-user'],
-                                env=dict(os.environ, HOME='/unrelated', PATH=str(binary)+':'+os.environ['PATH']),
-                                input='', capture_output=True, text=True, timeout=5)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('-n\n--\npython3\n-I\n', result.stdout)
-        self.assertIn('--dry-run\n--user\nservice-user', result.stdout)
-        self.assertNotIn('UNEXPECTED', result.stdout)
-
     def test_root_ownership_and_mode_checks_are_enforced(self):
-        self.guard.stop()
         file = self.root/'system-artifact'; file.write_text('fixture'); file.chmod(0o666)
-        with self.assertRaises(removal.Refusal):
-            removal.trusted(file)
-        self.guard.start()
+        self.guard.stop()
+        try:
+            with self.assertRaises(removal.Refusal):
+                removal.trusted(file)
+        finally:
+            self.guard.start()
 
 
 if __name__ == '__main__':

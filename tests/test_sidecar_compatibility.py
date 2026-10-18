@@ -62,9 +62,8 @@ class SidecarCompatibilityTests(unittest.TestCase):
     def test_original_job_state_without_sidecars_is_preserved(self):
         legacy = {'id': 'test-legacy', 'status': 'running', 'pid': os.getpid(), 'started': time.time()}
         self.jobs.save(legacy)
+        # Kill refusal for unverified legacy identity is covered in test_execution.
         self.assertEqual(self.jobs.load(legacy['id'])['identity_state'], 'unverified_legacy')
-        with self.assertRaisesRegex(ValueError, 'identity'):
-            self.jobs.kill(legacy['id'])
         self.jobs.exit_path(legacy['id']).write_text('0')
         self.assertEqual(Jobs(self.cfg).load(legacy['id'])['status'], 'done')
         self.assertFalse((self.jobs.dir/'.sidecars').exists())
@@ -81,17 +80,6 @@ class SidecarCompatibilityTests(unittest.TestCase):
         self.assertTrue(outcome.exists())
         self.assertTrue(output.exists())
         self.assertFalse((self.jobs.dir/'.sidecars').exists())
-
-    def test_retention_cleans_only_finalized_jobs_sidecars(self):
-        self.cfg.retention_days = 1
-        for job_id, status in (('test-finished', 'done'), ('test-uncertain', 'cleanup_incomplete')):
-            self.jobs.save({'id': job_id, 'status': status, 'ended': 1})
-            for kind in KINDS:
-                sidecar_path(self.jobs.dir, job_id, kind, create=True).write_text('{}')
-        self.jobs.prune()
-        for kind in KINDS:
-            self.assertFalse(sidecar_path(self.jobs.dir, 'test-finished', kind).exists())
-            self.assertTrue(sidecar_path(self.jobs.dir, 'test-uncertain', kind).exists())
 
     def test_sidecar_directory_symlink_is_rejected(self):
         other = self.root/'other'; other.mkdir()

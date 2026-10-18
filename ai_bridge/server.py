@@ -25,6 +25,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
+from . import __version__
 from .optional_agents import agents as ag
 from .agent_failures import describe_failure
 from . import catalog
@@ -51,10 +52,11 @@ WAIT_SLOTS = threading.BoundedSemaphore(8)
 HOST_CONFIG = HostConfig()
 INSTRUCTIONS = REDACT(HOST_CONFIG.instructions + "\n" + CLIENT_INSTRUCTIONS)
 
-mcp = MCPServer(name="ai-bridge", instructions=INSTRUCTIONS, version="1.0.0")
+mcp = MCPServer(name="ai-bridge", instructions=INSTRUCTIONS, version=__version__)
 
 RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 RW = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True)
+MANAGE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 
 def bridge_tool(**options):
@@ -162,27 +164,16 @@ def _catalog_page(tool: str, roots: list[Path], key: str, limit: int, offset: in
 
 
 @bridge_tool(annotations=RO)
-def list_instructions(limit: int = 30, offset: int = 0) -> str:
-    """Discover user-maintained guidance in ~/.config/ai-bridge/instructions/ (honors XDG_CONFIG_HOME).
+def list_instructions(kind: Literal['instructions', 'skills'] = 'instructions', limit: int = 30, offset: int = 0) -> str:
+    """Discover guidance on this machine: names, short descriptions and paths. Read chosen files with read_file.
 
-    Call when first working on this machine. Lists Markdown/text document names, brief descriptions,
-    and paths; use read_file to load only documents relevant to the task. Contents are not preloaded
-    at connection. Follow next_offset for more entries. Changes appear on the next listing.
+    kind=instructions (call first when working here): user docs in ~/.config/ai-bridge/instructions/.
+    kind=skills: local SKILL.md files (Codex, Claude, Cursor, .agents or AI_BRIDGE_SKILL_DIRS).
+    Discovery never installs or runs skills. Follow next_offset for more entries.
     """
+    if kind == 'skills':
+        return _catalog_page("list_instructions", catalog.skill_dirs(), "skills", limit, offset, skills=True)
     return _catalog_page("list_instructions", [catalog.instructions_dir()], "instructions", limit, offset)
-
-
-@bridge_tool(annotations=RO)
-def list_skills(limit: int = 30, offset: int = 0) -> str:
-    """Discover local skills when relevant to the user's task; returns names, descriptions, and SKILL.md paths.
-
-    Scans local Codex, Claude, Cursor, and .agents skill directories, or AI_BRIDGE_SKILL_DIRS.
-    Use read_file to load a selected skill and its referenced files on demand; do not load all skills.
-    This does not execute/install skills or supply client-specific tools they may require.
-    Follow next_offset for more entries. Contents are not preloaded at connection.
-    """
-    return _catalog_page("list_skills", catalog.skill_dirs(), "skills", limit, offset, skills=True)
-
 
 
 def _ssh_result(tool, args, operation):
@@ -241,7 +232,11 @@ def ssh_transfer(host: str, direction: Literal['upload', 'download'], local_path
 @bridge_tool(annotations=RO)
 def system_info() -> str:
     """Basic facts about this machine: OS, user, uptime, disk, memory, sudo setup, installed agent CLIs."""
+    prefix = Path(sys.prefix)
     info = {
+        "bridge_version": __version__,
+        # Staged releases run from <root>/releases/<name>/venv; other layouts report None.
+        "bridge_release": prefix.parent.name if prefix.name == 'venv' and prefix.parent.parent.name == 'releases' else None,
         "hostname": socket.gethostname(),
         "user": os.environ.get("USER") or Path.home().name,
         "home": str(Path.home()),
@@ -304,7 +299,7 @@ def run_command(command: str, cwd: str | None = None, timeout: int = 120, sudo: 
 def start_job(command: str, cwd: str | None = None, sudo: bool = False) -> str:
     """Start a long-running bash command in the background. Returns a job_id.
 
-    Use job_status to watch it. Jobs keep running even if this chat ends or the server restarts.
+    Watch it with job_status. Jobs keep running if this chat ends or the server restarts.
     """
     args = {"command": command, "cwd": cwd, "sudo": sudo}
     try:
@@ -315,23 +310,34 @@ def start_job(command: str, cwd: str | None = None, sudo: bool = False) -> str:
 
 
 @bridge_tool(annotations=RO)
-def job_status(job_id: str, wait_seconds: int = 0, tail_lines: int = 60) -> str:
-    """Status and recent output of a background job.
+def job_status(job_id: str, wait_seconds: int = 0, tail_lines: int = 60, log_offset: int | None = None,
+               log_bytes: int = 12000, generation: str | None = None) -> str:
+    """Status and output of any background job, including coding-agent turns from agent_send.
 
-    wait_seconds: block up to this long (max 110) for the job to finish before answering.
-    tail_lines: how many output lines to include (max 400).
+    wait_seconds: block up to this long (max 110) for the job to finish; poll again while running.
+    tail_lines: recent output lines (max 400). For agent jobs this is the turn's recent activity,
+      plus the final answer, outcome, session_id and verified runner resources.
+    log_offset: page the full saved output instead (start at 0, follow next_offset_bytes and pass
+      the returned generation). Truncated logs keep the head and tail only.
     """
-    args = {"job_id": job_id, "wait_seconds": wait_seconds}
+    args = {"job_id": job_id, "wait_seconds": wait_seconds, "log_offset": log_offset}
     try:
         meta = _wait_job(job_id, min(max(wait_seconds, 0), 110))
     except (KeyError, ValueError, OSError) as e:
         return _out("job_status", args, {"error": str(e)})
-    return _out("job_status", args, _job_view(meta, min(max(tail_lines, 0), 400)))
+    tail_lines = min(max(tail_lines, 0), 400)
+    if meta.get("kind") == "agent":
+        view = _agent_view(meta, tail_lines if log_offset is None else 0)
+    else:
+        view = _job_view(meta, tail_lines if log_offset is None else 0)
+    if log_offset is not None:
+        view["log"] = JOBS.log_chunk(job_id, log_offset, log_bytes, generation)
+    return _out("job_status", args, view)
 
 
 @bridge_tool(annotations=RO)
-def list_jobs(limit: int = 20) -> str:
-    """List recent background jobs and agent runs, newest first."""
+def list_jobs(limit: int = 20, kind: Literal['command', 'agent'] | None = None) -> str:
+    """List recent background jobs, newest first: commands and coding-agent turns (kind filters)."""
     rows = [
         {
             "job_id": m["id"],
@@ -345,37 +351,26 @@ def list_jobs(limit: int = 20) -> str:
             "started": _fmt_time(m.get("started")),
             **job_fields(m),
         }
-        for m in JOBS.list(limit=min(limit, 100))
+        for m in JOBS.list(limit=min(limit, 100), kind=kind)
     ]
-    return _out("list_jobs", {"limit": limit}, rows)
+    return _out("list_jobs", {"limit": limit, "kind": kind}, rows)
 
 
 @bridge_tool(annotations=RW)
 def kill_job(job_id: str) -> str:
-    """Stop a running background job or agent run (SIGTERM, then SIGKILL)."""
+    """Stop one exact background job or coding-agent turn by job_id. Inspect cleanup in the result.
+
+    Commands get SIGTERM then SIGKILL. Agent turns also stop their verified child processes; detached
+    or privileged descendants may survive. Never stops processes by name or saved session ID.
+    """
     try:
+        if JOBS.load(job_id).get("kind") == "agent":
+            from .management import stop_agent
+            return _out("kill_job", {"job_id": job_id}, stop_agent(JOBS, job_id))
         meta = JOBS.kill(job_id)
     except (KeyError, ValueError, OSError) as e:
         return _out("kill_job", {"job_id": job_id}, {"error": str(e)})
     return _out("kill_job", {"job_id": job_id}, _job_view(meta, tail_lines=20))
-
-
-@bridge_tool(annotations=RO)
-def job_log(job_id: str, offset_bytes: int = 0, max_bytes: int = 12000,
-            generation: str | None = None) -> str:
-    """Read a bounded chunk of retained job output. Follow next_offset_bytes.
-
-    Pass the returned generation on subsequent pages; a changed snapshot asks you to restart.
-    Truncated logs retain the head and tail, not the omitted middle. No command is executed.
-    """
-    disclosure = {}
-    try:
-        disclosure = job_fields(JOBS.load(job_id))
-        result = JOBS.log_chunk(job_id, offset_bytes, max_bytes, generation)
-    except (OSError, ValueError, KeyError) as error:
-        result = {'error': str(error)}
-    result.update(disclosure)
-    return _out('job_log', {'job_id': job_id, 'offset_bytes': offset_bytes}, result)
 
 
 def _file_operation(request: dict, sudo: bool):
@@ -447,8 +442,23 @@ Permission = Literal["full", "edit", "readonly"]
 
 
 @bridge_tool(annotations=RO)
-def agent_list() -> str:
-    """Which coding agent CLIs are installed here (claude, codex, cursor), with versions."""
+def agent_list(show: Literal['agents', 'models', 'tasks'] = 'agents', agent: AgentName | None = None,
+               limit: int = 30, offset: int = 0) -> str:
+    """Optional coding agents on this machine (claude, codex, cursor).
+
+    show=agents: installed CLIs, versions, running turns and default permission.
+    show=models: model choices for one agent (agent required), with source and freshness. Cached
+      entries do not prove account access. Pass a chosen ID to agent_send(model=...).
+    show=tasks: private task workspaces; pass task_id to agent_send to share one.
+    Follow next_offset for more models or tasks. Manage agent turns with job_status/list_jobs/kill_job.
+    """
+    args = {"show": show, "agent": agent, "limit": limit, "offset": offset}
+    limit, offset = max(1, min(limit, 100)), max(0, offset)
+    if show == 'models':
+        return _out("agent_list", args, _model_page(agent, limit, offset))
+    if show == 'tasks':
+        from .management import Tasks
+        return _out("agent_list", args, _page({}, 'tasks', Tasks(CFG).list(), limit, offset))
     rows = {}
     for a in ag.AGENTS:
         try:
@@ -461,35 +471,29 @@ def agent_list() -> str:
         for m in JOBS.list(limit=50, kind="agent")
         if m["status"] == "running"
     ]
-    return _out("agent_list", {}, {"agents": rows, "running_turns": running, "default_permission": CFG.agent_default_permission})
+    return _out("agent_list", args, {"agents": rows, "running_turns": running, "default_permission": CFG.agent_default_permission})
 
 
-@bridge_tool(annotations=RO)
-def agent_models(agent: AgentName, limit: int = 30, offset: int = 0) -> str:
-    """Discover model choices on demand, with source and freshness; does not start a model turn.
+def _page(payload: dict, key: str, rows: list, limit: int, offset: int) -> dict:
+    """Add one size-bounded page of rows whose next_offset never skips entries."""
+    page = rows[offset:offset + limit]
+    payload.update({key: page, "total": len(rows), "offset": offset,
+                    "next_offset": offset + len(page) if offset + len(page) < len(rows) else None})
+    while len(json.dumps(payload, ensure_ascii=False, indent=1, default=str)) > CFG.max_output_chars - 500 and len(page) > 1:
+        page.pop()
+        payload["next_offset"] = offset + len(page)
+    return payload
 
-    Cursor queries its account model-list CLI; Codex reads its timestamped local catalog cache.
-    Unsupported interfaces/formats return unavailable, never guessed model IDs. Cached entries do not
-    guarantee current account access. CLI current/default settings do not identify every chat's model.
-    Follow next_offset to page. Pass a chosen ID to agent_send(model=...). Aliases are not resolved.
-    """
-    args = {"agent": agent, "limit": limit, "offset": offset}
+
+def _model_page(agent: str | None, limit: int, offset: int) -> dict:
     if agent not in ag.AGENTS:
-        return _out("agent_models", args, {"error": f"agent must be one of {ag.AGENTS}"})
-    limit, offset = max(1, min(limit, 100)), max(0, offset)
+        return {"error": f"show=models needs agent, one of {ag.AGENTS}"}
     try:
         payload = ag.model_catalog(agent)
     except Exception as error:
         payload = {"agent": agent, "status": "unavailable", "source": None, "models": [],
                    "fetched_at": None, "age_seconds": None, "note": f"Model discovery unavailable: {error}"}
-    rows = payload.pop('models')
-    page = rows[offset:offset + limit]
-    payload.update(models=page, total=len(rows), offset=offset,
-                   next_offset=offset + len(page) if offset + len(page) < len(rows) else None)
-    while len(json.dumps(payload, ensure_ascii=False, indent=1)) > CFG.max_output_chars - 500 and len(page) > 1:
-        page.pop()
-        payload['next_offset'] = offset + len(page)
-    return _out("agent_models", args, payload)
+    return _page(payload, "models", payload.pop("models"), limit, offset)
 
 
 @bridge_tool(annotations=RW)
@@ -503,6 +507,9 @@ def agent_send(
     wait_seconds: int = 30,
     task_id: str | None = None,
     timeout: int | None = None,
+    mode: Literal['interactive', 'exec'] | None = None,
+    remote: bool = False,
+    name: str | None = None,
 ) -> str:
     """Send a prompt to a local coding agent and start a turn. Returns job_id (and the result if it finishes fast).
 
@@ -515,48 +522,43 @@ def agent_send(
     permission: full = run anything without asking; edit = edit files, limited commands;
                 readonly = analyse/plan only. Default comes from server config.
     model: optional model name for that CLI.
-    wait_seconds: wait up to this long (max 110) before returning. Poll with agent_wait after.
+    mode: interactive (default for claude/codex) runs the turn in a normal chat the user can also open in
+      the terminal (claude attach/--resume, codex resume); exec is a one-shot headless run (cursor: exec only).
+    remote: enable Remote Control so the chat can be continued from the Claude app / claude.ai/code or the
+      ChatGPT Codex remote. Needs interactive mode. For codex this turns Remote Control on for the shared
+      daemon (it restarts once). The result's native.remote_url / native.remote_control reports it.
+    name: display name for the chat (shown in the CLI's resume list and remote session list).
+    wait_seconds: wait up to this long (max 110) before returning. Then poll job_status with the job_id;
+      stop with kill_job.
     """
     from .management import start_agent
-    args = {"agent": agent, "cwd": cwd, "session_id": session_id, "task_id": task_id}
+    args = {"agent": agent, "cwd": cwd, "session_id": session_id, "task_id": task_id, "mode": mode, "remote": remote}
     try:
         with AGENT_START_LOCK:
             meta = start_agent(CFG, JOBS, agent, prompt, cwd, session_id, permission, model, task_id, timeout,
-                               invocation_origin="mcp")
+                               invocation_origin="mcp", mode=mode, remote=remote, name=name)
     except Exception as error:
         return _out('agent_send', args, {'error': str(error)})
-    return agent_wait(meta["id"], wait_seconds)
+    meta = _wait_job(meta["id"], min(max(wait_seconds, 0), 110))
+    return _out('agent_send', args, _agent_view(meta, 15))
 
 
-@bridge_tool(annotations=RO)
-def agent_wait(job_id: str, wait_seconds: int = 60, progress_lines: int = 15) -> str:
-    """Wait for an agent turn started by agent_send. Returns status, progress, and the agent's final answer when done.
-
-    Call repeatedly while status is 'running'. wait_seconds max 110.
-    status is the job lifecycle; outcome describes the agent result. Limit/provider
-    failures return failure.scope='agent' and a reason, not an MCP transport error.
-    Failed turns are never automatically retried. Keep session_id for an explicit continuation.
-    """
-    args = {"job_id": job_id, "wait_seconds": wait_seconds}
-    try:
-        meta = _wait_job(job_id, min(max(wait_seconds, 0), 110))
-    except (KeyError, ValueError, OSError) as e:
-        return _out("agent_wait", args, {"error": str(e)})
-    if meta.get("kind") != "agent":
-        return _out("agent_wait", args, {"error": "Not an agent job. Use job_status."})
-
+def _agent_view(meta: dict, progress_lines: int) -> dict:
+    """Agent-turn result: status is the job lifecycle, outcome the agent result. Limit/provider
+    failures are reported with failure.scope='agent', never retried automatically."""
+    job_id = meta["id"]
     try:
         output = JOBS.output_info(job_id)
         if output.get('parser_error'):
             raise ValueError(output['parser_error'])
         parsed = output.get('parsed') or ag.parse_output(meta["agent"], JOBS.read_log(job_id))
     except Exception as error:
-        return _out('agent_wait', args, {'job_id': job_id, 'agent': meta.get('agent'),
+        return {'job_id': job_id, 'kind': 'agent', 'agent': meta.get('agent'),
                     'status': meta['status'], 'session_id': meta.get('session_id'),
                     'exit_code': meta.get('exit_code'), 'outcome': 'unavailable',
                     'failure': {'scope': 'adapter', 'code': 'parser_unavailable', 'automatic_retry': False},
                     'error': f'Agent output parser unavailable: {error}',
-                    'next': 'Use job_status to inspect the underlying job. No new chat was started.'})
+                    'next': 'Page the raw output with job_status(log_offset=0). No new chat was started.'}
     mismatch = bool(meta.get("requested_session_id") and parsed["session_id"]
                     and parsed["session_id"] != meta["requested_session_id"])
     if parsed["session_id"] and parsed["session_id"] != meta.get("session_id") and not mismatch:
@@ -565,6 +567,7 @@ def agent_wait(job_id: str, wait_seconds: int = 60, progress_lines: int = 15) ->
 
     view = {
         "job_id": job_id,
+        "kind": "agent",
         "task_id": meta.get("task_id"),
         "workspace_type": meta.get("workspace_type"),
         "workspace_peers": meta.get("workspace_peers", []),
@@ -572,6 +575,9 @@ def agent_wait(job_id: str, wait_seconds: int = 60, progress_lines: int = 15) ->
         "timeout": meta.get("timeout"),
         "timed_out": meta.get("timed_out", False),
         "agent": meta["agent"],
+        "mode": meta.get("mode") or "exec",
+        "remote": meta.get("remote", False),
+        "native": parsed.get("native") or None,
         "status": meta["status"],
         "session_id": meta.get("session_id"),
         "requested_model": meta.get("model"),
@@ -585,17 +591,18 @@ def agent_wait(job_id: str, wait_seconds: int = 60, progress_lines: int = 15) ->
         "cwd": meta.get("cwd"),
         "runtime_s": round((meta.get("ended") or time.time()) - meta["started"], 1),
         "wait_deferred": meta.get("wait_deferred", False),
-        "recent_activity": parsed["progress"][-max(1, min(progress_lines, 100)) :],
+        "recent_activity": parsed["progress"][-progress_lines:] if progress_lines else [],
     }
     view.update(job_fields(meta))
+    view.update(_runner_facts(job_id))
     if mismatch:
         view.update(is_error=True, outcome='failed', requested_session_id=meta["requested_session_id"],
                     returned_session_id=parsed["session_id"],
                     error="CLI returned a different session ID. Continuity was not preserved; do not continue automatically.")
-        return _out("agent_wait", args, view)
+        return view
     if meta["status"] == "running":
         view['outcome'] = 'running'
-        view["next"] = "Still working. Call agent_wait again with the same job_id."
+        view["next"] = "Still working. Call job_status again with the same job_id and wait_seconds."
     else:
         view["exit_code"] = meta.get("exit_code")
         view["result"] = parsed["final"]
@@ -610,15 +617,32 @@ def agent_wait(job_id: str, wait_seconds: int = 60, progress_lines: int = 15) ->
             if parsed['is_error'] and parsed['final']:
                 diagnostics += '\n' + str(parsed['final'])
             view.update(describe_failure(diagnostics, meta['status']))
+        elif (parsed.get('native') or {}).get('waiting_for'):
+            view['outcome'] = 'waiting'
+            view['next'] = (f"The chat is waiting for {parsed['native']['waiting_for']}. Continue it with agent_send "
+                            "and this session_id, in the terminal, or remotely.")
         else:
             view['outcome'] = 'succeeded'
             if not view['session_id']:
                 view['next'] = 'Turn completed without a reported session ID; do not assume a resumable chat.'
-    return _out("agent_wait", args, view)
+    return view
+
+
+def _runner_facts(job_id: str) -> dict:
+    """Verified runner identity/resources for an agent job; best effort, never fails the view."""
+    from .management import runtime
+    try:
+        row = runtime(JOBS, job_id)[0]
+    except Exception:
+        return {}
+    keys = ('runner_pid', 'runner_identity_verified', 'runner_resources', 'target_pid',
+            'target_identity_verified', 'observed_descendants')
+    return {k: row[k] for k in keys if k in row}
 
 
 @bridge_tool(annotations=RO)
-def agent_sessions(agent: AgentName, cwd: str | None = None, limit: int = 15, offset: int = 0) -> str:
+def agent_sessions(agent: AgentName, cwd: str | None = None, limit: int = 15, offset: int = 0,
+                   include_archived: bool = False) -> str:
     """List past sessions of a coding agent on this machine (newest first), optionally only for one project dir.
 
     Includes sessions started directly in the terminal, not only through this bridge.
@@ -627,13 +651,14 @@ def agent_sessions(agent: AgentName, cwd: str | None = None, limit: int = 15, of
     Codex records the turn selection, Claude the reply model, and Cursor its lastUsedModel setting.
     Unknown or unsupported records return null; recent JSONL model lookup is bounded to the last 2 MB.
     offset: skip this many matching chats to page through older sessions.
+    include_archived: also list chats archived with agent_manage.
     Cursor lists local CLI chats, not Cursor editor/cloud chats.
     """
     limit, offset = max(1, min(limit, 100)), max(0, offset)
     args = {"agent": agent, "cwd": cwd, "limit": limit, "offset": offset}
     try:
         from .management import Sessions
-        rows = Sessions(CFG, JOBS).enrich(agent, ag.list_sessions(agent, cwd, None))
+        rows = Sessions(CFG, JOBS).enrich(agent, ag.list_sessions(agent, cwd, None), include_archived)
     except Exception as e:  # noqa: BLE001
         return _out("agent_sessions", args, {"error": f"Could not read {agent} sessions: {e}"})
     page = rows[offset:offset + limit]
@@ -649,33 +674,45 @@ def agent_sessions(agent: AgentName, cwd: str | None = None, limit: int = 15, of
     return _out("agent_sessions", args, payload)
 
 
-@bridge_tool(annotations=RO)
-def agent_runtime(job_id: str | None = None) -> str:
-    """Inspect managed agent jobs and verified runner resources. Native services are not managed here."""
-    from .management import runtime
-    return _out('agent_runtime', {'job_id': job_id}, runtime(JOBS, job_id))
+@bridge_tool(annotations=MANAGE)
+def agent_manage(
+    action: Literal['alias', 'archive', 'unarchive', 'cleanup_task'],
+    agent: AgentName | None = None,
+    session_id: str | None = None,
+    alias: str | None = None,
+    task_id: str | None = None,
+    confirm: bool = False,
+    allow_uninspectable: bool = False,
+) -> str:
+    """Organize agent chats and remove finished task workspaces. Native chat history is never changed.
 
-
-@bridge_tool(annotations=RW)
-def agent_stop(job_id: str) -> str:
-    """Cancel one exact managed agent job. Reports cleanup limits; never stops by name or saved session ID."""
-    from .management import stop_agent
-    return _out('agent_stop', {'job_id': job_id}, stop_agent(JOBS, job_id))
-
-
-@bridge_tool(annotations=RO)
-def tasks_list(limit: int = 30, offset: int = 0) -> str:
-    """List private managed workspaces. Pass task_id to agent_send to share a workspace; coordinate edits."""
-    from .management import Tasks
-    rows = Tasks(CFG).list()
-    offset, limit = max(0, offset), max(1, min(limit, 100))
-    page = rows[offset:offset + limit]
-    payload = {'tasks': page, 'total': len(rows), 'offset': offset,
-               'next_offset': offset + len(page) if offset + len(page) < len(rows) else None}
-    while len(json.dumps(payload)) > CFG.max_output_chars - 500 and len(page) > 1:
-        page.pop()
-        payload['next_offset'] = offset + len(page)
-    return _out('tasks_list', {}, payload)
+    alias: set a display name for agent+session_id (omit alias to clear it).
+    archive / unarchive: hide or restore a chat in agent_sessions (include_archived shows it).
+    cleanup_task: delete a task workspace from agent_list(show=tasks). Without confirm it only previews
+      blockers (running/uncertain jobs, processes using it, mounts). confirm=true deletes; this cannot be
+      undone. allow_uninspectable also ignores processes that cannot be inspected (high risk).
+    """
+    from .management import Sessions, Tasks
+    args = {"action": action, "agent": agent, "session_id": session_id, "task_id": task_id, "confirm": confirm}
+    try:
+        if action == 'cleanup_task':
+            if not task_id:
+                raise ValueError('cleanup_task needs task_id.')
+            result = Tasks(CFG).cleanup(task_id, JOBS, not confirm,
+                                        allow_uninspectable=allow_uninspectable, confirmed=confirm)
+            if not confirm:
+                result['next'] = ('Review blockers; call again with confirm=true to delete.' if result['cleanup_allowed']
+                                  else 'Cleanup is blocked; resolve the blockers first.')
+        else:
+            if not agent or not session_id:
+                raise ValueError(f'{action} needs agent and session_id.')
+            changes = {'alias': alias} if action == 'alias' else {'archived': action == 'archive'}
+            row = Sessions(CFG, JOBS).overlay(agent, session_id, **changes)
+            result = {'session_id': session_id, 'agent': agent, 'action': action,
+                      'bridge_metadata': row.get('bridge_metadata'), 'native_history_changed': False}
+    except (KeyError, ValueError, OSError) as error:
+        result = {'error': str(error)}
+    return _out('agent_manage', args, result)
 
 
 @bridge_tool(annotations=RO)

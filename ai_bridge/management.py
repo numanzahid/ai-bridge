@@ -95,6 +95,10 @@ class Tasks:
         row = {'task_id': task_id, 'schema': 1, 'owner_uid': os.getuid(),
                'created': time.time(), 'workspace': str(path / 'workspace')}
         write_json(path / '.task.json', row)
+        if self.cfg.trust_tasks:
+            # Empty bridge-created folder: trust it so agent CLIs never stop at a prompt nobody can answer.
+            from .trust import set_trust
+            row = dict(row, trust=set_trust(row['workspace'])['agents'])
         return row
 
     def inspect(self, task_id):
@@ -160,6 +164,9 @@ class Tasks:
                     raise ValueError('Task state changed during cleanup; rerun dry-run.')
                 if not shutil.rmtree.avoids_symlink_attacks:
                     raise ValueError('Safe directory removal is unavailable on this platform.')
+                if self.cfg.trust_tasks:
+                    from .trust import set_trust
+                    result['trust_removed'] = set_trust(str(workspace), trusted=False)['agents']
                 # Pin the parent; removal never follows workspace symlinks.
                 fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 try:
@@ -205,9 +212,21 @@ def observed_task_processes(workspace):
 
 
 def start_agent(cfg, jobs, agent, prompt, cwd=None, session_id=None, permission=None,
-                model=None, task_id=None, timeout=None, *, invocation_origin=None):
+                model=None, task_id=None, timeout=None, *, invocation_origin=None,
+                mode=None, remote=False, name=None, trust=False):
     if agent not in ag.AGENTS or (permission or cfg.agent_default_permission) not in ag.PERMISSIONS:
         raise ValueError('Unknown agent or permission.')
+    # Interactive (normal native chat) is the default where the CLI supports it.
+    mode = mode or ('interactive' if agent in ag.INTERACTIVE_AGENTS else 'exec')
+    if mode not in ('interactive', 'exec'):
+        raise ValueError('mode must be interactive or exec.')
+    if mode == 'interactive' and agent not in ag.INTERACTIVE_AGENTS:
+        raise ValueError(f'{agent} supports mode=exec only.')
+    if remote and mode != 'interactive':
+        raise ValueError('remote needs mode=interactive (exec runs cannot be remote controlled).')
+    if name is not None and (not isinstance(name, str) or not 1 <= len(name) <= 100 or
+                             any(ord(c) < 32 for c in name)):
+        raise ValueError('name must contain 1..100 printable characters.')
     if timeout is not None and (type(timeout) is not int or not 1 <= timeout <= 604800):
         raise ValueError('timeout must be 1..604800 seconds, or omitted.')
     binary = ag.find_binary(agent)
@@ -235,12 +254,21 @@ def start_agent(cfg, jobs, agent, prompt, cwd=None, session_id=None, permission=
         else:
             task = tasks.create()
             workdir = task['workspace']
+        trusted = None
+        if trust:
+            from .trust import set_trust
+            trusted = set_trust(workdir, [agent])
         peers = [m['id'] for m in jobs.list(limit=None, kind='agent')
                  if uncertain(m) and m.get('cwd') == workdir]
-        argv = ag.build_argv(agent, binary, prompt, session_id, perm, model)
+        if mode == 'interactive':
+            argv = ag.build_interactive_argv(agent, binary, prompt, session_id, perm, model, name, remote)
+        else:
+            argv = ag.build_argv(agent, binary, prompt, session_id, perm, model)
+        label = f'resume {session_id}' if session_id else 'new turn'
         return jobs.start(argv, workdir, kind='agent',
-                          display=f'{agent}: resume {session_id}' if session_id else f'{agent}: new turn',
+                          display=f'{agent}: {label} ({mode}{", remote" if remote else ""})',
                           extra={'agent': agent, 'session_id': session_id, 'requested_session_id': session_id,
+                                 'mode': mode, 'remote': remote, 'name': name, 'trust': trusted,
                                  'invocation_origin': invocation_origin,
                                  'permission': perm, 'model': model, 'task_id': task['task_id'] if task else None,
                                  'workspace_type': 'task' if task else 'project', 'timeout': timeout,
@@ -330,6 +358,10 @@ class Sessions:
             path = self.overlay_path(agent, sid)
             value = read_json(path) if path.exists() or path.is_symlink() else {}
             if changes:
+                if 'alias' in changes and changes['alias'] is None:
+                    # Clearing restores the native title.
+                    value.pop('alias', None)
+                    changes = {k: v for k, v in changes.items() if k != 'alias'}
                 if 'alias' in changes and (not isinstance(changes['alias'], str) or
                         not 1 <= len(changes['alias']) <= 200 or any(ord(c) < 32 for c in changes['alias'])):
                     raise ValueError('Display alias must contain 1..200 printable characters.')

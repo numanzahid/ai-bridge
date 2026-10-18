@@ -150,3 +150,26 @@ class NativeStoragePermissionsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'conversion unsupported'):
                 self.dry_run()
             execute.assert_not_called()
+
+    def test_resume_modes_and_other_adapters(self):
+        info = {'session_id': SID, 'cwd': str(self.project), 'resumable': True,
+                'storage_path': str(self.storage), 'title': 'native', 'mode': 'noninteractive'}
+        before = self.storage.read_bytes()
+        sessions = Sessions(self.cfg, self.jobs)
+        with self.permissions(), self.native_preflight() as (probe, execute), \
+             patch('ai_bridge.agents.session_info', return_value=info), \
+             patch('ai_bridge.agents.resume_cwd', return_value=str(self.project)):
+            plan = sessions.interactive('codex', SID, 'promote')
+            self.assertEqual(plan['argv'], ['/fake/codex', 'resume', '--include-non-interactive', SID])
+            with self.assertRaisesRegex(ValueError, 'unsupported'):
+                sessions.interactive('cursor', SID, 'fork')
+            probe.return_value = {'stdout': '--resume SESSION_ID', 'stderr': '', 'exit_code': 0,
+                                  'timed_out': False, 'stdout_truncated': False}
+            for agent in ('claude', 'cursor'):
+                with self.subTest(agent=agent):
+                    self.assertEqual(sessions.interactive(agent, SID)['argv'], ['/fake/codex', '--resume', SID])
+            probe.return_value['timed_out'] = True
+            with self.assertRaisesRegex(ValueError, 'capability'):
+                sessions.interactive('claude', SID)
+            execute.assert_not_called()
+        self.assertEqual(self.storage.read_bytes(), before)

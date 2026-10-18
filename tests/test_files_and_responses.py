@@ -10,6 +10,7 @@ from unittest.mock import patch
 from ai_bridge.file_ops import read_text,write_text
 from ai_bridge.responses import render
 from ai_bridge.core import Redactor
+from ai_bridge.privilege import fields, initial
 
 
 class FileTests(unittest.TestCase):
@@ -49,6 +50,10 @@ class FileTests(unittest.TestCase):
         fifo=self.root/'fifo';os.mkfifo(fifo)
         with self.assertRaises(ValueError):write_text(fifo,'bad',atomic=True)
         with self.assertRaises(ValueError):read_text(fifo)
+        os.unlink(hard)
+        with patch('os.listxattr',return_value=['user.example']):
+            with self.assertRaisesRegex(ValueError,'xattrs'):
+                write_text(self.file,'bad',atomic=True)
         self.assertEqual(self.file.read_text(),'old')
 
     def test_private_new_file_and_default_direct_write(self):
@@ -68,40 +73,39 @@ class FileTests(unittest.TestCase):
         self.assertIn(hashlib.sha256(self.file.read_bytes()).hexdigest(),result)
         self.assertLess(len(result),400)
 
+    def test_requested_lines_beyond_capture_prefix(self):
+        self.file.write_text(''.join(f'line {i}\n' for i in range(10000)))
+        result=read_text(self.file,start_line=9000,max_lines=2,max_bytes=100)
+        self.assertIn('line 8999',result)
+        self.assertIn('line 9000',result)
+        self.assertIn('more lines available',result)
+        self.assertNotIn('line 9001',result)
+
 
 class ResponseTests(unittest.TestCase):
     def test_large_results_always_remain_json_with_control_fields(self):
-        value={'job_id':'test-id','status':'failed','outcome':'blocked','exit_code':1,
-               'failure':{'scope':'agent','code':'usage_limit','message':'é"\\'*10000},
-               'stdout':'a'*100000,'stderr':'b'*100000,'session_id':'original'}
-        for limit in (512,1800,30000):
-            result=render(value,limit,lambda x:x)
-            data=json.loads(result)
-            self.assertLessEqual(len(result),limit)
-            self.assertEqual(data['failure']['code'],'usage_limit')
-            self.assertEqual(data['session_id'],'original')
-            self.assertTrue(data['truncation']['truncated'])
+        bulk={'stdout':'a'*100000,'stderr':'b'*100000}
+        agent={'job_id':'test-id','status':'failed','outcome':'blocked','exit_code':1,'session_id':'original',
+               'failure':{'scope':'agent','code':'usage_limit','message':'é"\\'*10000}}
+        local=fields(initial(True))
+        remote={'host':'lab','method':'ssh',
+                'remote_privilege':{'sudo_requested':True,'sudo_attempted':None,'sudo_confirmed':False},
+                'remote_privilege_message':'Remote sudo requested but root execution is unconfirmed.'}
+        for name,control in (('agent',agent),('privilege',local),('remote_privilege',remote)):
+            for limit in (512,1800,30000):
+                with self.subTest(response=name,limit=limit):
+                    result=render({**bulk,**control},limit,lambda x:x)
+                    data=json.loads(result)
+                    # Disclosure payloads get a 1024-character floor so they always fit.
+                    self.assertLessEqual(len(result),max(limit,1024 if name!='agent' else 0))
+                    self.assertTrue(data['truncation']['truncated'])
+                    for key in ('session_id','privilege','privilege_message','remote_privilege'):
+                        if key in control:
+                            self.assertEqual(data[key],control[key])
+                    if 'failure' in control:
+                        self.assertEqual(data['failure']['code'],'usage_limit')
 
     def test_numeric_credential_does_not_break_json(self):
         data=json.loads(render({'message':'password 1234','count':1234},1000,Redactor(['1234'])))
         self.assertEqual(data['message'],'password [REDACTED]')
         self.assertEqual(data['count'],1234)
-
-class AdditionalFileTests(unittest.TestCase):
-    def test_requested_lines_beyond_capture_prefix(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path=Path(tmp)/'long'
-            path.write_text(''.join(f'line {i}\n' for i in range(10000)))
-            result=read_text(path,start_line=9000,max_lines=2,max_bytes=100)
-            self.assertIn('line 8999',result)
-            self.assertIn('line 9000',result)
-            self.assertIn('more lines available',result)
-            self.assertNotIn('line 9001',result)
-
-    def test_atomic_write_refuses_xattrs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path=Path(tmp)/'config';path.write_text('old')
-            with patch('os.listxattr',return_value=['user.example']):
-                with self.assertRaisesRegex(ValueError,'xattrs'):
-                    write_text(path,'new',atomic=True)
-            self.assertEqual(path.read_text(),'old')

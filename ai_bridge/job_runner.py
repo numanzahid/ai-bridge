@@ -40,7 +40,7 @@ class Recorder:
         self.dropping = {"stdout": False, "stderr": False}
         self.record_limit = max(262144, min(limit, 1048576))
         self.parsed = {'session_id': None, 'reported_model': None, 'final': None,
-                       'is_error': False, 'progress': [], 'other': [], 'stats': {}}
+                       'is_error': False, 'progress': [], 'other': [], 'stats': {}, 'native': {}}
         self.parser_error = None
         self.records_dropped = 0
         self.last_flush = 0
@@ -82,6 +82,7 @@ class Recorder:
                 self.parsed[key] = (self.parsed[key]+[str(v)[-4000:] for v in parsed[key]])[-count:]
             from .responses import render
             self.parsed['stats'].update(parsed['stats'])
+            self.parsed['native'].update(parsed.get('native') or {})
             self.parsed['stats'] = json.loads(render(self.parsed['stats'],8192,lambda text:text))
         except Exception as error:
             self.parser_error = str(error)[:1000]
@@ -166,7 +167,8 @@ def main():
     try:
         result = execute(cfg, payload['argv'], payload['cwd'], payload.get('timeout'), payload['sudo'],
                          on_output=recorder.add, cancel=cancelled.is_set, on_start=started, on_privilege=privilege_changed,
-                         track_children=bool(payload.get("agent")), on_lineage=lineage_changed)
+                         track_children=bool(payload.get("agent")) and payload.get("track_children", True),
+                         on_lineage=lineage_changed)
     except Exception as error:
         recorder.add('stderr', ('Job startup/execution failed: '+str(error)+'\n').encode())
         from .privilege import initial, fields

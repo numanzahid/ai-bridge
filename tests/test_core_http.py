@@ -1,6 +1,6 @@
 """Actual loopback HTTP tests with missing/broken optional agents; no real agent turns."""
 
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -47,8 +47,6 @@ class CoreHTTPTests(unittest.TestCase):
             fake.write_text('#!/bin/sh\nprintf "simulated CLI failure\\n" >&2\nexit 1\n')
             if scenario == 'usage_limit':
                 fake.write_text('#!/bin/sh\nprintf "%s\\n" "ActionRequiredError: Increase limits for faster responses You\'re out of usage. Switch to Auto, or ask your admin to increase your limit to continue." >&2\nexit 1\n')
-            elif scenario == 'service_unavailable':
-                fake.write_text('#!/bin/sh\nprintf "%s\\n" "Service unavailable (503)" >&2\nexit 1\n')
             if scenario == 'mcp_session':
                 fake.write_text('#!' + sys.executable + '\nimport json,time\nprint(json.dumps({"type":"thread.started","thread_id":"' + SID + '"}), flush=True)\ntime.sleep(1)\n')
             fake.chmod(0o755)
@@ -130,7 +128,7 @@ class CoreHTTPTests(unittest.TestCase):
         self.assertIn('tell the user the task and target', initialized['instructions'])
         tools = self.rpc(base, 'tools/list', {})['tools']
         self.assertIn('run_command', {tool['name'] for tool in tools})
-        self.assertEqual(len(tools), 23)
+        self.assertEqual(len(tools), 17)
         result = self.tool(base, 'run_command', {'command': 'printf core-ok'})
         self.assertEqual(result['stdout'], 'core-ok')
         self.assertIn('agents', self.tool(base, 'system_info', {}))
@@ -149,19 +147,30 @@ class CoreHTTPTests(unittest.TestCase):
         self.assertEqual((root/'state/audit.log').stat().st_mode & 0o777, 0o600)
         self.assertNotIn(TOKEN, (root/'state/audit.log').read_text())
 
+    def core_alive(self, base):
+        # Full core coverage runs once in test_core_http_without_any_coding_clis;
+        # other scenarios only prove agent-side failures leave the core usable.
+        tools = self.rpc(base, 'tools/list', {})['tools']
+        self.assertEqual(len(tools), 17)
+        self.assertEqual(self.tool(base, 'run_command', {'command': 'printf core-ok'})['stdout'], 'core-ok')
+        self.assertIn('agents', self.tool(base, 'system_info', {}))
+
     def test_managed_task_and_runtime_tools_without_live_agents(self):
         with self.running('usage_limit') as (root, base):
             job = self.tool(base, 'agent_send', {'agent': 'cursor', 'prompt': 'fixture', 'wait_seconds': 0})
             self.assertTrue(job['task_id'].startswith('task-'))
             self.assertTrue(Path(job['cwd']).is_relative_to(root / 'tasks'))
-            tasks = self.tool(base, 'tasks_list', {})
+            tasks = self.tool(base, 'agent_list', {'show': 'tasks'})
             self.assertEqual(tasks['total'], 1)
             self.assertEqual(tasks['tasks'][0]['task_id'], job['task_id'])
-            observed = self.tool(base, 'agent_runtime', {'job_id': job['job_id']})
-            self.assertTrue(observed['managed'])
-            result = self.tool(base, 'agent_wait', {'job_id': job['job_id'], 'wait_seconds': 2})
+            self.assertEqual([row['job_id'] for row in self.tool(base, 'list_jobs', {'kind': 'agent'})], [job['job_id']])
+            self.assertEqual(self.tool(base, 'list_jobs', {'kind': 'command'}), [])
+            result = self.tool(base, 'job_status', {'job_id': job['job_id'], 'wait_seconds': 2})
+            self.assertEqual(result['kind'], 'agent')
             self.assertNotEqual(result['status'], 'running')
-            stopped = self.tool(base, 'agent_stop', {'job_id': job['job_id']})
+            self.assertIn('log', self.tool(base, 'job_status', {'job_id': job['job_id'], 'log_offset': 0}))
+            stopped = self.tool(base, 'kill_job', {'job_id': job['job_id']})
+            self.assertTrue(stopped['managed'])
             self.assertEqual(stopped['job_id'], job['job_id'])
             second = self.tool(base, 'agent_send', {'agent': 'cursor', 'prompt': 'fixture',
                                'task_id': job['task_id'], 'wait_seconds': 1})
@@ -171,7 +180,7 @@ class CoreHTTPTests(unittest.TestCase):
     def test_mcp_boundary_persists_session_evidence(self):
         import hashlib
         with self.running('mcp_session') as (root, base):
-            result = self.tool(base, 'agent_send', {'agent': 'codex', 'prompt': 'fixture', 'wait_seconds': 0})
+            result = self.tool(base, 'agent_send', {'agent': 'codex', 'prompt': 'fixture', 'wait_seconds': 0, 'mode': 'exec'})
             jid = result['job_id']
             meta = json.loads((root / 'state/jobs' / (jid + '.json')).read_text())
             self.assertEqual(meta['invocation_origin'], 'mcp')
@@ -183,7 +192,7 @@ class CoreHTTPTests(unittest.TestCase):
             row = self.tool(base, 'agent_sessions', {'agent': 'codex'})['sessions'][0]
             self.assertEqual(row['bridge_origin'], 'mcp')
             self.assertIsNone(row['native_source'])
-            self.tool(base, 'agent_wait', {'job_id': jid, 'wait_seconds': 2})
+            self.tool(base, 'job_status', {'job_id': jid, 'wait_seconds': 2})
 
     def test_core_http_without_any_coding_clis(self):
         with self.running('missing') as (root, base):
@@ -193,13 +202,13 @@ class CoreHTTPTests(unittest.TestCase):
 
     def test_core_http_when_agent_helpers_fail_to_load(self):
         with self.running('backend_failed') as (root, base):
-            self.core_checks(root, base)
+            self.core_alive(base)
             self.assertIn('error', self.tool(base, 'agent_send', {'agent': 'codex', 'prompt': 'not run'}))
-            self.assertEqual(self.tool(base, 'agent_models', {'agent': 'cursor'})['status'], 'unavailable')
+            self.assertEqual(self.tool(base, 'agent_list', {'show': 'models', 'agent': 'cursor'})['status'], 'unavailable')
 
     def test_broken_cursor_reader_does_not_break_other_histories(self):
         with self.running('cursor_reader_failed') as (root, base):
-            self.core_checks(root, base)
+            self.core_alive(base)
             for agent in ('codex', 'claude'):
                 self.assertEqual(self.tool(base, 'agent_sessions', {'agent': agent})['total'], 1)
             rows = self.tool(base, 'agent_sessions', {'agent': 'cursor'})['sessions']
@@ -209,16 +218,16 @@ class CoreHTTPTests(unittest.TestCase):
 
     def test_disabled_adapter_is_independent(self):
         with self.running('disabled') as (root, base):
-            self.core_checks(root, base)
+            self.core_alive(base)
             self.assertIn('disabled', self.tool(base, 'agent_sessions', {'agent': 'cursor'})['error'])
             self.assertEqual(self.tool(base, 'agent_sessions', {'agent': 'codex'})['total'], 1)
 
     def test_broken_cli_and_host_origin_checks(self):
         with self.running('broken_cli') as (root, base):
-            self.core_checks(root, base)
+            self.core_alive(base)
             job = self.tool(base, 'agent_send', {'agent': 'codex', 'prompt': 'test stub', 'wait_seconds': 1})
             if job['status'] == 'running':
-                job = self.tool(base, 'agent_wait', {'job_id': job['job_id'], 'wait_seconds': 2})
+                job = self.tool(base, 'job_status', {'job_id': job['job_id'], 'wait_seconds': 2})
             self.assertTrue(job['is_error'])
             self.assertEqual(job['exit_code'], 1)
             for host in ('bridge.test', 'bridge.test:443', 'bridge.test:8443'):
@@ -233,18 +242,19 @@ class CoreHTTPTests(unittest.TestCase):
                 self.assertEqual(error.exception.code, status)
 
     def test_provider_failures_are_normal_mcp_results_and_core_stays_usable(self):
-        for scenario, outcome in (('usage_limit', 'blocked'), ('service_unavailable', 'failed')):
+        # Classification of each failure kind is unit-tested in test_server_sessions.
+        for scenario, outcome in (('usage_limit', 'blocked'),):
             with self.subTest(scenario=scenario), self.running(scenario) as (root, base):
                 job = self.tool(base, 'agent_send', {'agent': 'cursor', 'prompt': 'test stub', 'wait_seconds': 1})
                 if job['status'] == 'running':
-                    job = self.tool(base, 'agent_wait', {'job_id': job['job_id'], 'wait_seconds': 2})
+                    job = self.tool(base, 'job_status', {'job_id': job['job_id'], 'wait_seconds': 2})
                 self.assertEqual(job['status'], 'failed')
                 self.assertEqual(job['exit_code'], 1)
                 self.assertEqual(job['outcome'], outcome)
                 self.assertEqual(job['failure']['scope'], 'agent')
                 self.assertEqual(job['failure']['code'], scenario)
                 self.assertFalse(job['failure']['automatic_retry'])
-                polled = self.tool(base, 'agent_wait', {'job_id': job['job_id'], 'wait_seconds': 0})
+                polled = self.tool(base, 'job_status', {'job_id': job['job_id'], 'wait_seconds': 0})
                 self.assertEqual(polled['failure'], job['failure'])
                 self.assertEqual(len(self.tool(base, 'list_jobs', {})), 1)
                 self.assertEqual(self.tool(base, 'run_command', {'command': 'printf still-available'})['stdout'], 'still-available')

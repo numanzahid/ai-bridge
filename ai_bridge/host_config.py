@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import sys
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -19,6 +20,10 @@ from .catalog import config_dir
 
 DEFAULTS = Path(__file__).with_name("host_defaults")
 VARIABLE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+# Tools removed in 2.0.0 and their replacements; old overrides warn instead of failing startup.
+RETIRED_TOOLS = {"agent_wait": "job_status", "agent_runtime": "job_status", "job_log": "job_status",
+                 "agent_stop": "kill_job", "agent_models": "agent_list", "tasks_list": "agent_list",
+                 "list_skills": "list_instructions"}
 
 
 class Definition(BaseModel):
@@ -118,6 +123,10 @@ class HostConfig:
 
     def register(self, server: MCPServer, redact):
         unknown = set(self.tool_descriptions) - self._registered_tools
+        for name in sorted(unknown & set(RETIRED_TOOLS)):
+            print(f"WARNING: tool-descriptions/{name}.md is ignored: {name} was replaced by {RETIRED_TOOLS[name]}.",
+                  file=sys.stderr)
+        unknown -= set(RETIRED_TOOLS)
         if unknown:
             raise ValueError(f"Tool descriptions reference unknown tools: {sorted(unknown)}")
         for resource in self.resources:
