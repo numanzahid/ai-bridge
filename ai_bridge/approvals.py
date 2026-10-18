@@ -265,7 +265,7 @@ class Approvals:
                          approver=task.get('approver'))
                 return None
             request = self._create(tool, args, fp)
-            self.log('approval_requested', request_id=request['id'], tool=tool)
+            self.log('approval_requested', request_id=request['id'], requested_tool=tool)
             return self._view(request, 'approval_required')
 
     def _view(self, request: dict, status: str) -> dict:

@@ -5,6 +5,12 @@ see [releasing](docs/releasing.md) for when to bump which part.
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-10-19
+
+### Fixed
+- A new approval request crashed the tool call instead of returning `approval_required`
+  (audit field name clash). Nothing ran; the request was still recorded.
+
 ## [3.0.0] - 2026-10-19
 
 ### Changed (breaking)

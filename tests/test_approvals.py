@@ -230,7 +230,9 @@ class ServerGateTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix='aib-gate-')
         self.addCleanup(tmp.cleanup)
-        self.store = Approvals(Path(tmp.name) / 'state', Path(tmp.name) / 'decisions', owner=os.getuid(), machine='m')
+        # Keep the server's real audit hook so its field names are exercised too.
+        self.store = Approvals(Path(tmp.name) / 'state', Path(tmp.name) / 'decisions', owner=os.getuid(), machine='m',
+                               log=self.server.APPROVALS.log)
         for patcher in (patch.object(self.server, 'APPROVALS', self.store),
                         patch.object(self.server.CFG, 'sudo_approval', True)):
             patcher.start()
@@ -255,6 +257,15 @@ class ServerGateTests(unittest.TestCase):
         for mock in (run_sync, start, execute, ssh):
             mock.assert_not_called()
         self.assertEqual(len(self.store.all_requests()), 5)
+
+    def test_requests_and_uses_are_audited(self):
+        with patch.object(self.server, 'audit') as audit, patch('ai_bridge.server.run_sync',
+                return_value={'exit_code': 0, 'stdout': '', 'stderr': '', 'timed_out': False}):
+            request_id = self.blocked(self.server.run_command('id', cwd='/tmp', sudo=True))['approval']['request_id']
+            self.store.decide(request_id, 'approved', writer=fake_root_writer)
+            self.server.run_command('id', cwd='/tmp', sudo=True)
+        events = [(c.args[2], c.kwargs.get('request_id')) for c in audit.call_args_list if c.kwargs.get('phase') == 'approval']
+        self.assertEqual(events, [('approval_requested', request_id), ('approval_used', request_id)])
 
     def test_approved_call_runs_once_and_unprivileged_calls_are_untouched(self):
         s = self.server
