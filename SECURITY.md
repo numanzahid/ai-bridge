@@ -26,6 +26,13 @@ or paths. Test only systems you're authorized to test. No response time is promi
 - **No undo:** stop, cancel and rollback can't reverse completed work. Detached jobs
   can outlive a restart.
 
+## Sudo approval
+
+Privileged calls (`sudo=true`, `remote_sudo=true`) wait until you approve them on the host with
+your sudo password; client "always allow" settings don't bypass this. It guards against an AI
+acting without you, not against a process that attacks the service account directly (Docker
+group, stored password). See [sudo approval](docs/sudo-approval.md).
+
 ## Remote Control
 
 `agent_send(remote=true)` makes a chat controllable from your Claude or ChatGPT account (phone or

@@ -1,7 +1,14 @@
 """Privilege disclosure; a request is never evidence of successful escalation."""
 import os
 
-CLIENT_INSTRUCTIONS = """Privilege disclosure:
+CLIENT_INSTRUCTIONS = """Privileged approval:
+Calls with sudo=true or remote_sudo=true do not run until the user approves them on the host.
+When a result has status approval_required, show the user the request_id, host and operation
+and ask them to approve it on the host. Only after they say they approved, repeat the exact
+same call. Never approve requests yourself, run the approval command, or claim the user approved.
+status rejected means stop and ask the user.
+
+Privilege disclosure:
 Before privileged operations, tell the user the task and target requiring root access.
 Report the outcome and privilege metadata afterward: requested or attempted sudo is not proof
 that the target ran. A root service is already root, even with sudo=false. Never reveal

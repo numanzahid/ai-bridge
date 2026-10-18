@@ -48,6 +48,9 @@ class Config:
     tasks_dir: Path = Path.home() / ".ai-bridge-tasks"
     # Opt-in (AI_BRIDGE_TRUST_TASKS=1): mark bridge-created task folders trusted for agent CLIs.
     trust_tasks: bool = False
+    # Privileged calls wait for a root-owned decision made on the host (see approvals.py).
+    sudo_approval: bool = True
+    approval_dir: Path = Path("/var/lib/ai-bridge/approvals")
 
     @classmethod
     def load(cls) -> "Config":
@@ -71,6 +74,7 @@ class Config:
             allowed_origins=[h.strip() for h in _env("AI_BRIDGE_ALLOWED_ORIGINS").split(",") if h.strip()],
             tasks_dir=Path(_env("AI_BRIDGE_TASKS_DIR") or Path.home() / ".ai-bridge-tasks"),
             trust_tasks=_env("AI_BRIDGE_TRUST_TASKS", "0") == "1",
+            sudo_approval=_env("AI_BRIDGE_SUDO_APPROVAL", "1") != "0",
             default_cwd=_env("AI_BRIDGE_DEFAULT_CWD") or str(Path.home()),
             state_dir=state_dir,
             max_output_chars=int(_env("AI_BRIDGE_MAX_OUTPUT_CHARS", "30000")),
@@ -176,6 +180,7 @@ def child_env() -> dict[str, str]:
         if not k.startswith("AI_BRIDGE_") and k not in ("CREDENTIALS_DIRECTORY",)
     }
     env.setdefault("HOME", str(Path.home()))
+    env["AI_BRIDGE_CHILD"] = "1"  # the approval CLI refuses to decide from bridge processes
     env["TERM"] = "dumb"
     env["NO_COLOR"] = "1"
     env["DEBIAN_FRONTEND"] = "noninteractive"

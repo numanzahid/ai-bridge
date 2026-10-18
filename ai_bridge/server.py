@@ -41,11 +41,14 @@ from .core import (
     OPERATION_ID,
 )
 
+from .approvals import Approvals
 from .privilege import CLIENT_INSTRUCTIONS, fields as privilege_fields, initial as privilege_initial, job_fields
 
 CFG = Config.load()
 REDACT = Redactor([CFG.token] + ([CFG.sudo_password] if CFG.sudo_password else []))
 JOBS = Jobs(CFG)
+APPROVALS = Approvals(CFG.state_dir, CFG.approval_dir,
+                      log=lambda event, **fields: audit(CFG, REDACT, event, {}, phase='approval', **fields))
 AGENT_START_LOCK = threading.Lock()
 WAIT_SLOTS = threading.BoundedSemaphore(8)
 
@@ -104,6 +107,21 @@ def _out(tool: str, args: dict, payload: dict | str) -> str:
     text = render(payload, CFG.max_output_chars, REDACT)
     audit(CFG, REDACT, tool, args, text)
     return text
+
+
+def _approval(tool: str, args: dict, requested: bool) -> dict | None:
+    """The response that replaces a privileged call until the user approves it on the host.
+
+    A root service is already root, so there is nothing for an approval to guard.
+    Errors fail closed: the call does not run.
+    """
+    if not requested or not CFG.sudo_approval or os.geteuid() == 0:
+        return None
+    try:
+        return APPROVALS.gate(tool, args)
+    except OSError as error:
+        return {'status': 'approval_unavailable', 'automatic_retry': False,
+                'error': f'Approval storage is unavailable, so the privileged call did not run: {error}'}
 
 
 def _fmt_time(ts: float | None) -> str | None:
@@ -211,6 +229,10 @@ def ssh_run(host: str, command: str, timeout: int = 120, remote_sudo: bool = Fal
     Announce remote task/target and report confirmation separately from command outcome.
     """
     args = {'host': host, 'timeout': timeout, 'remote_sudo': remote_sudo}
+    blocked = _approval('ssh_run', {'host': host, 'command': command}, remote_sudo)
+    if blocked:
+        return _out('ssh_run', args, dict(blocked, remote_privilege={
+            'sudo_requested': True, 'sudo_attempted': False, 'sudo_confirmed': False}))
     return _ssh_result('ssh_run', args, lambda adapter: adapter.run(CFG, host, command, timeout, remote_sudo))
 
 
@@ -248,6 +270,8 @@ def system_info() -> str:
         "package_managers": [name for name in ('apt-get','dnf','yum','pacman','zypper','apk') if shutil.which(name)],
         "sudo_verified": False,
         "sudo_note": 'Configuration only; no elevation probe was run.',
+        "sudo_approval": ('not applicable: service runs as root' if os.geteuid() == 0 else
+                          'required: the user approves each privileged call on the host' if CFG.sudo_approval else 'off'),
         "limits": {'capture_bytes': CFG.capture_bytes, 'job_log_bytes': CFG.job_log_bytes,
                    'retention_days': CFG.retention_days, 'response_chars': CFG.max_output_chars},
         "service_euid": os.geteuid(),
@@ -280,11 +304,15 @@ def run_command(command: str, cwd: str | None = None, timeout: int = 120, sudo: 
     command: bash command line (runs as a login shell, no TTY).
     cwd: working directory (default: the configured default dir).
     timeout: seconds, 1-600. Use start_job for longer work.
-    sudo: run as root. The password is injected server side; never include it yourself.
+    sudo: run as root. Needs the user's approval on the host first (status approval_required);
+      after they approve, repeat the exact call. Never include a password yourself.
     """
     args = {"command": command, "cwd": cwd, "timeout": timeout, "sudo": sudo}
     timeout = max(1, min(int(timeout), 600))
     try:
+        blocked = _approval('run_command', {'command': command, 'cwd': resolve_cwd(CFG, cwd), 'timeout': timeout}, sudo)
+        if blocked:
+            return _out("run_command", args, {**blocked, **privilege_fields(privilege_initial(True))})
         r = run_sync(CFG, command, cwd, timeout, sudo)
     except (FileNotFoundError, SudoUnavailable) as e:
         return _out("run_command", args, {"error": str(e), **privilege_fields(getattr(e, "privilege", privilege_initial(sudo)))})
@@ -303,6 +331,9 @@ def start_job(command: str, cwd: str | None = None, sudo: bool = False) -> str:
     """
     args = {"command": command, "cwd": cwd, "sudo": sudo}
     try:
+        blocked = _approval('start_job', {'command': command, 'cwd': resolve_cwd(CFG, cwd)}, sudo)
+        if blocked:
+            return _out("start_job", args, {**blocked, **privilege_fields(privilege_initial(True))})
         meta = JOBS.start(["bash", "-lc", command], resolve_cwd(CFG, cwd), sudo=sudo, display=command)
     except (FileNotFoundError, SudoUnavailable) as e:
         return _out("start_job", args, {"error": str(e), **privilege_fields(getattr(e, "privilege", privilege_initial(sudo)))})
@@ -403,6 +434,9 @@ def read_file(path: str, start_line: int = 1, max_lines: int = 400, sudo: bool =
     Large files report that only a prefix was captured; use shell tools for arbitrary ranges.
     """
     args = {'path': path, 'start_line': start_line, 'max_lines': max_lines, 'sudo': sudo}
+    blocked = _approval('read_file', {'path': os.path.expanduser(path)}, sudo)
+    if blocked:
+        return _out('read_file', args, {**blocked, **privilege_fields(privilege_initial(True))})
     try:
         result = _file_operation({'operation': 'read', 'path': os.path.expanduser(path),
             'start_line': start_line, 'max_lines': max_lines,
@@ -424,6 +458,11 @@ def write_file(path: str, content: str, append: bool = False, sudo: bool = False
     optimistic, not a lock against unrelated editors. append cannot be combined with atomic.
     """
     args = {'path': path, 'append': append, 'sudo': sudo, 'bytes': len(content.encode()), 'atomic': atomic}
+    blocked = _approval('write_file', {'path': os.path.expanduser(path), 'content': content, 'append': append,
+                                       'make_dirs': make_dirs, 'atomic': atomic, 'expected_sha256': expected_sha256,
+                                       'backup': backup, 'mode': mode}, sudo)
+    if blocked:
+        return _out('write_file', args, {**blocked, **privilege_fields(privilege_initial(True))})
     try:
         result = _file_operation({'operation': 'write', 'path': os.path.expanduser(path),
             'content': content, 'append': append, 'make_dirs': make_dirs, 'atomic': atomic,

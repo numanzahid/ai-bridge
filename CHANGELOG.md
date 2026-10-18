@@ -5,6 +5,15 @@ see [releasing](docs/releasing.md) for when to bump which part.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-19
+
+### Changed (breaking)
+- Privileged calls need approval on the host: `sudo=true` (shell, jobs, files) and
+  `ssh_run(remote_sudo=true)` return `status: approval_required` with a request ID until the user
+  approves with `python -m ai_bridge.approvals` (sudo password every time). Approve once, or for a
+  task (10 calls, 15 min). Repeating the exact call runs it. `AI_BRIDGE_SUDO_APPROVAL=0` turns it off.
+  See [sudo approval](docs/sudo-approval.md).
+
 ## [2.0.0] - 2026-10-18
 
 ### Changed (breaking)

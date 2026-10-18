@@ -17,6 +17,8 @@ parameters. Every tool runs as the service user; one token can call all of them.
 | `read_file` | Read a text file with line numbers (`sudo` for root files) | "Show /etc/nginx/nginx.conf" |
 | `write_file` | Write or append a file; optional atomic write, backup, hash check | "Set `max_connections=200` in app.conf" |
 
+- `sudo=true` waits for your approval on the host: the call returns `status: approval_required`
+  with a `request_id`; after you approve, the AI repeats the exact call. See [sudo approval](sudo-approval.md).
 - Long work: `start_job`, then poll `job_status`. Jobs survive chat end and restarts.
 - Output is bounded. Long logs keep the head and tail; page with `job_status(log_offset=0)`.
 - Job status: `running`, `done`, `failed`, `killed`, `lost`, `cleanup_incomplete`.
@@ -32,6 +34,7 @@ parameters. Every tool runs as the service user; one token can call all of them.
 
 - Only named aliases from your SSH config; host keys must already be trusted.
 - Executable or conditional config (`ProxyCommand`, `Match`) is refused.
+- `remote_sudo=true` needs approval on this host first, like local `sudo=true`.
 - `committed=null` means the result is unknown: check before retrying.
 - Prepare hosts as in [setup](setup.md#remote-ssh-preparation).
 

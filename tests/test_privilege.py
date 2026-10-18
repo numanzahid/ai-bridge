@@ -119,6 +119,10 @@ class ToolPrivilegeTests(unittest.TestCase):
     def setUpClass(cls):
         from helpers import server
         cls.server = server
+        # These tests cover the executor's disclosure; approval gating is covered in test_approvals.
+        cls.no_gate = patch.object(server.CFG, 'sudo_approval', False)
+        cls.no_gate.start()
+        cls.addClassCleanup(cls.no_gate.stop)
 
     def test_file_helpers_disclose_and_keep_plain_reads_unchanged(self):
         value = initial(True)

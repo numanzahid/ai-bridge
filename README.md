@@ -41,6 +41,7 @@ Then set up HTTPS and your client: [setup](docs/setup.md).
 
 - [Setup](docs/setup.md): install choices, HTTPS, client connection, settings
 - [Tools](docs/reference.md): the 17 tools with examples
+- [Sudo approval](docs/sudo-approval.md): privileged calls wait for your approval on the host
 - [Operations](docs/operations.md): deploy, rollback, troubleshooting, uninstall
 - [Releasing](docs/releasing.md): versions and release steps
 - [Reliability](docs/system-hardening.md): limits, logging, containment

@@ -24,7 +24,7 @@ class SecurityTests(unittest.TestCase):
         with patch.dict(os.environ, {'AI_BRIDGE_TOKEN': 'secret', 'AI_BRIDGE_SUDO_PASSWORD_FILE': '/secret',
                                      'CREDENTIALS_DIRECTORY': '/private', 'KEEP_ME': 'visible'}):
             env = child_env()
-            self.assertFalse(any(key.startswith('AI_BRIDGE_') for key in env))
+            self.assertEqual([k for k in env if k.startswith('AI_BRIDGE_')], ['AI_BRIDGE_CHILD'])
             self.assertNotIn('CREDENTIALS_DIRECTORY', env)
             self.assertEqual(env['KEEP_ME'], 'visible')
 

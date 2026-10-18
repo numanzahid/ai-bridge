@@ -272,6 +272,7 @@ class SSHTests(unittest.TestCase):
     def test_tool_wrappers_return_safe_json_and_audited_alias(self):
         from helpers import server
         config=self.config()
+        self.cfg.sudo_approval=False  # approval gating is covered in test_approvals
         with patch.object(ssh,'Configuration',return_value=config),patch.object(server,'CFG',self.cfg), \
              patch.object(server,'audit') as audit:
             inventory=json.loads(server.ssh_hosts())

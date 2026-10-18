@@ -84,6 +84,7 @@ Edit `/etc/ai-bridge/ai-bridge.env` with `sudoedit` (literal values, no shell sy
 | `AI_BRIDGE_CAPTURE_BYTES` / `AI_BRIDGE_JOB_LOG_BYTES` / `AI_BRIDGE_AUDIT_BYTES` | 256 KiB / 4 MiB / 2 MiB |
 | `AI_BRIDGE_RETENTION_DAYS` | `0` (keep jobs forever) |
 | `AI_BRIDGE_SUDO_PASSWORD_FILE` | Overrides the systemd credential |
+| `AI_BRIDGE_SUDO_APPROVAL` | `1`: privileged calls wait for approval on the host ([sudo approval](sudo-approval.md)). `0` turns it off |
 | `AI_BRIDGE_CLAUDE_BIN`, `_CODEX_BIN`, `_CURSOR_BIN` | Agent CLI paths |
 | `AI_BRIDGE_CLAUDE_EXTRA_ARGS`, `_CODEX_EXTRA_ARGS`, `_CURSOR_EXTRA_ARGS` | Extra CLI flags (check permission effects) |
 | `AI_BRIDGE_CURSOR_HOME` | Cursor CLI storage |
