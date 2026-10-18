@@ -8,11 +8,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import selectors
 import secrets
+import signal
 import socket
 import shutil
 import subprocess
 import sys
+import time
+import unittest
 import venv
 
 import release as versioning
@@ -67,23 +71,131 @@ def check_port(host='127.0.0.1', port=8765, warn_only=False):
     return True
 
 
-def run_logged(argv, log_path, *, cwd=None, env=None, live=False, step='Command'):
+def run_logged(argv, log_path, *, cwd=None, env=None, live=False, step='Command', heartbeat=5):
+    started = last_progress = time.monotonic()
     with log_path.open('ab') as log:
-        if live:
-            process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            for line in process.stdout:
-                log.write(line)
-                log.flush()
-                print(line.decode(errors='replace'), end='', file=sys.stderr, flush=True)
-            process.stdout.close()
+        process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while selector.get_map() or process.poll() is None:
+                    if selector.get_map():
+                        events = selector.select(timeout=min(1, heartbeat))
+                    else:
+                        events = []
+                        try:
+                            process.wait(timeout=min(1, heartbeat))
+                        except subprocess.TimeoutExpired:
+                            pass
+                    for key, _ in events:
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        log.write(chunk)
+                        log.flush()
+                        if live:
+                            print(chunk.decode(errors='replace'), end='', file=sys.stderr, flush=True)
+                            last_progress = time.monotonic()
+                    now = time.monotonic()
+                    if now - last_progress >= heartbeat:
+                        progress(f'{step}: still running ({int(now - started)}s elapsed). Log: {log_path}')
+                        last_progress = now
+                    if not events and process.poll() is not None:
+                        break
             code = process.wait()
-        else:
-            code = subprocess.run(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                  stdout=log, stderr=log).returncode
+        except BaseException:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+            raise
+        finally:
+            process.stdout.close()
+        if code and not live:
+            with log_path.open('rb') as detail:
+                detail.seek(max(0, detail.seek(0, os.SEEK_END) - 4000))
+                print(detail.read().decode(errors='replace'), file=sys.stderr, flush=True)
     if code:
         raise RuntimeError(f'{step} FAILED (exit {code}). Full log: {log_path}. '
                            'Release was not marked READY or selected; the active service is unchanged.')
+
+
+class ProgressTestResult(unittest.TextTestResult):
+    """Count test cases (including subtest failures) and name the current test."""
+
+    def __init__(self, *args, total, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.total = total
+        self.counts = dict(passed=0, failed=0, errors=0, skipped=0, expected_failures=0, unexpected_successes=0)
+
+    def startTest(self, test):
+        super().startTest(test)
+        self.outcome = 'passed'
+        self.stream.writeln(f'[{self.testsRun}/{self.total}] RUN {test.id()}')
+        self.stream.flush()
+
+    def addFailure(self, test, err):
+        if self.outcome != 'errors':
+            self.outcome = 'failed'
+        super().addFailure(test, err)
+
+    def addError(self, test, err):
+        self.outcome = 'errors'
+        super().addError(test, err)
+
+    def addSkip(self, test, reason):
+        if self.outcome == 'passed':
+            self.outcome = 'skipped'
+        super().addSkip(test, reason)
+
+    def addExpectedFailure(self, test, err):
+        self.outcome = 'expected_failures'
+        super().addExpectedFailure(test, err)
+
+    def addUnexpectedSuccess(self, test):
+        self.outcome = 'unexpected_successes'
+        super().addUnexpectedSuccess(test)
+
+    def addSubTest(self, test, subtest, err):
+        if err is not None:
+            if self.outcome != 'errors':
+                self.outcome = 'failed' if issubclass(err[0], test.failureException) else 'errors'
+        super().addSubTest(test, subtest, err)
+
+    def stopTest(self, test):
+        self.counts[self.outcome] += 1
+        labels = dict(passed='PASS', failed='FAIL', errors='ERROR', skipped='SKIP',
+                      expected_failures='EXPECTED FAIL', unexpected_successes='UNEXPECTED PASS')
+        self.stream.writeln(f'[{self.testsRun}/{self.total}] {labels[self.outcome]} {test.id()} '
+                            f'| passed {self.counts["passed"]}, failed {self.counts["failed"]}, '
+                            f'errors {self.counts["errors"]}, skipped {self.counts["skipped"]}')
+        self.stream.flush()
+        super().stopTest(test)
+
+
+def run_tests(directory='tests', pattern='test*.py', summary_path=None, suite=None):
+    suite = suite if suite is not None else unittest.defaultTestLoader.discover(str(directory), pattern=pattern)
+    total = suite.countTestCases()
+    progress(f'Running {total} tests. Each line shows the current test and totals.')
+    started = time.monotonic()
+    runner = unittest.TextTestRunner(stream=sys.stderr, verbosity=0,
+                                    resultclass=lambda *a, **kw: ProgressTestResult(*a, total=total, **kw))
+    result = runner.run(suite)
+    summary = dict(total=total, completed=result.testsRun, **result.counts,
+                   elapsed_seconds=round(time.monotonic() - started, 1), successful=result.wasSuccessful() and total > 0)
+    progress(f'Tests complete: {result.testsRun}/{total} | passed {summary["passed"]}, '
+             f'failed {summary["failed"]}, errors {summary["errors"]}, skipped {summary["skipped"]} '
+             f'({summary["elapsed_seconds"]}s)')
+    if not total:
+        progress('FAILED: no tests were discovered; refusing to validate an untested release.')
+    if summary_path:
+        Path(summary_path).write_text(json.dumps(summary, indent=2) + '\n')
+    return 0 if summary['successful'] else 1
 
 
 def build_environment(release, source, python):
@@ -99,8 +211,9 @@ def build_environment(release, source, python):
 def test_release(release, source):
     env={k:v for k,v in os.environ.items() if not k.startswith('AI_BRIDGE_') and k != 'CREDENTIALS_DIRECTORY'}
     env['PYTHONPATH']=str(release/'app')
-    progress(f'Running regression tests; individual results follow. Log: {release/"tests.log"}')
-    run_logged([str(release/'venv/bin/python'),'-u','-m','unittest','discover','-s','tests','-v'],
+    progress(f'Running regression tests with counts and results. Log: {release/"tests.log"}')
+    run_logged([str(release/'venv/bin/python'),'-u',str(release/'validation/deploy.py'),'test',
+                '--summary',str(release/'test-summary.json')],
                release/'tests.log',cwd=release/'validation',env=env,live=True,step='Regression tests')
     progress('Regression tests PASSED. Recording dependency versions.')
     with (release/'dependencies.txt').open('wb') as log:
@@ -152,7 +265,7 @@ def stage(root, source, python=sys.executable, builder=build_environment, tester
         validation.mkdir()
         shutil.copytree(source/'tests',validation/'tests',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         (validation/'ai_bridge').symlink_to(release/'app/ai_bridge', target_is_directory=True)
-        for name in ('install.sh', 'bootstrap.py', 'uninstall.sh', 'uninstall.py', 'merge_env.py','requirements.txt','requirements.lock','deploy.py','release.py','CHANGELOG.md'):
+        for name in ('install.sh', 'installer.py', 'bootstrap.py', 'uninstall.sh', 'uninstall.py', 'merge_env.py','requirements.txt','requirements.lock','deploy.py','release.py','CHANGELOG.md'):
             shutil.copy2(source/name,validation/name)
         builder(release,source,python)
         tester(release,source)
@@ -219,14 +332,19 @@ def activate(root, release, rollback=False):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('stage','verify','activate','rollback','check-port'))
+    parser.add_argument('action',choices=('stage','verify','activate','rollback','check-port','test'))
     parser.add_argument('release',nargs='?')
     parser.add_argument('--root',type=Path,default=Path.home()/'.local/share/ai-bridge')
     parser.add_argument('--source',type=Path,default=Path(__file__).resolve().parent)
     parser.add_argument('--python',default=sys.executable)
     parser.add_argument('--port',type=int,default=8765)
     parser.add_argument('--warn-only',action='store_true',help='Report port conflicts without failing installation.')
+    parser.add_argument('--tests',default='tests',help='Test discovery directory for the test action.')
+    parser.add_argument('--pattern',default='test*.py',help='Test discovery pattern for the test action.')
+    parser.add_argument('--summary',type=Path,help='Write test totals as JSON.')
     args=parser.parse_intermixed_args()
+    if args.action == 'test':
+        raise SystemExit(run_tests(args.tests, args.pattern, args.summary))
     if args.action=='check-port':
         available=check_port(port=args.port,warn_only=args.warn_only)
         if args.warn_only:

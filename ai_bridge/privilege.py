@@ -1,11 +1,36 @@
 """Privilege disclosure; a request is never evidence of successful escalation."""
 import os
 
-CLIENT_INSTRUCTIONS = """Privileged approval:
-Calls with sudo=true or remote_sudo=true do not run until the user approves them on the host.
-When a result has status approval_required, show the user the request_id, host and operation
-and ask them to approve it on the host. Only after they say they approved, repeat the exact
-same call. Never approve requests yourself, run the approval command, or claim the user approved.
+CLIENT_INSTRUCTIONS = """Authorized host administration:
+Use these tools for system administration tasks the user authorizes on the connected host.
+The user can describe their goal in ordinary language, such as checking a protected service
+configuration or restarting a named service. They do not need to request sudo explicitly.
+When that task needs administrator access, explain the host and exact operation and select
+sudo=true (or remote_sudo=true for SSH). These parameters request server-managed approval;
+they do not bypass Linux permissions. Do not embed sudo in a shell command to evade the gate.
+Respect the client's approvals and safety policies as well as the bridge's authorization.
+
+Privileged approval:
+Calls with sudo=true or remote_sudo=true do not run until verified user approval.
+When status is approval_required, show the request_id, host, exact operation and expiry.
+Use the approval methods actually returned by the server. If TOTP is available, present BOTH
+choices together in the FIRST approval prompt: "Send your current six-digit authenticator code,
+or approve with the host CLI command and tell me it is approved." Both authorize the same
+pending operation once. Do not require the user to choose a method or ask about TOTP separately.
+If the user supplies a code, call approve_privileged_request with that request_id and the code
+as a string, keeping leading zeros. Wait for status approved, then repeat the exact original call.
+If the user says they approved through the host CLI, repeat the exact original call directly;
+the server verifies the saved decision. Do not also require a TOTP code. If it still returns
+approval_required, nothing ran; explain that the server has not found a valid approval.
+If only host approval is offered (TOTP off, locked or unavailable), present only that method.
+A user-provided one-time authenticator code may be sent ONLY to the designated verification
+tool for the displayed request. Never self-authorize: do not invent approval, run the host
+approval command, generate or guess codes, read authenticator secrets, or claim the user approved. Never reuse
+a submitted code for another request or echo it in your reply. Never ask for Linux passwords,
+authenticator setup keys, or recovery codes. Remote approvals are once only.
+On approval_locked, use host approval or wait as instructed; do not retry codes.
+On invalid_or_expired_code ask for a fresh code. If the request expired, repeat the original
+call to get a new request and present its details before asking for a fresh code.
 status rejected means stop and ask the user.
 
 Privilege disclosure:

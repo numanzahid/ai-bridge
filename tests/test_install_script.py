@@ -33,6 +33,13 @@ class InstallScriptTests(unittest.TestCase):
 
     # Whole-script runs
 
+    def test_simple_commands_dispatch_to_progress_flow(self):
+        self.command('python3', '#!/bin/sh\nprintf "%s\\n" "$@"\n')
+        for flag, action in (('--update', 'update'), ('--setup-authenticator', 'setup-authenticator'), ('--restart', 'restart')):
+            result = self.shell(flag, uid=1000)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('installer.py\n' + action, result.stdout)
+
     def test_root_noninteractive_refuses_before_staging(self):
         result = self.shell()
         self.assertNotEqual(result.returncode, 0)

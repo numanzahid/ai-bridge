@@ -5,6 +5,40 @@ see [releasing](docs/releasing.md) for when to bump which part.
 
 ## [Unreleased]
 
+## [3.2.2] - 2026-10-19
+
+### Fixed
+- Present authenticator and host CLI approval together in the first approval prompt, with
+  structured methods for the same pending request. Either method suffices; CLI approval does
+  not also require a TOTP code. Locked/unavailable TOTP is not offered.
+- Align mandatory client instructions, bundled host guidance, and privileged tool descriptions
+  around authorized administration tasks, explicit root access, and server-verified approval.
+  Client safety and approval controls continue to apply.
+
+## [3.2.1] - 2026-10-19
+
+### Fixed
+- Installation and updates now show numbered phases, current test counts and pass/fail/error/skip
+  totals, quiet-build heartbeats, restart state with elapsed time, and verified completion.
+- `bash install.sh --update` runs the complete update in one command; `--setup-authenticator`
+  and `--restart` handle setup/restart with progress. Existing enrollments are preserved.
+- Authenticator code entry is visible, with explicit verification and save progress. Linux
+  sudo password entry stays hidden.
+- Limit graceful server request shutdown to 10 seconds so idle MCP connections do not hold
+  restarts until systemd's 90-second kill timeout.
+
+## [3.2.0] - 2026-10-19
+
+### Added
+- Optional phone authenticator approval for individual privileged calls through
+  `approve_privileged_request`, with host-only enrollment, QR/manual setup, rotation and disable.
+- Durable TOTP replay protection and host-wide failure limits; root-owned host decisions and
+  the existing host approval CLI remain available, including during remote lockout.
+
+### Changed
+- The bridge exposes 18 tools. Authenticator codes and setup secrets are excluded from approval
+  audit fields; the service-user trust boundary and code-redirection limits are documented.
+
 ## [3.1.0] - 2026-10-19
 
 ### Added

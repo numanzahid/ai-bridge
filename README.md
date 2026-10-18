@@ -32,16 +32,19 @@ Then set up HTTPS and your client: [setup](docs/setup.md).
 
 ## Update or remove
 
-- **Update:** re-running `install.sh` only stages a tested release; activation and
-  restart are separate. See [releasing](docs/releasing.md).
+- **Update:** run `bash install.sh --update` in a host terminal. It builds, shows test
+  progress, activates, restarts, and checks the service. Existing authenticator setup is kept.
+- **Phone approval:** `bash install.sh --setup-authenticator` handles enrollment and restart.
+- **Restart:** `bash install.sh --restart` shows the service state until verification succeeds.
+- **Stage only:** `bash install.sh --stage` builds and tests without changing the running service.
 - **Remove:** `bash install.sh --uninstall --dry-run`, then `bash install.sh --uninstall`,
   from a host terminal (never through the bridge). See [full uninstall](docs/operations.md#full-uninstall).
 
 ## Docs
 
 - [Setup](docs/setup.md): install choices, HTTPS, client connection, settings
-- [Tools](docs/reference.md): the 17 tools with examples
-- [Sudo approval](docs/sudo-approval.md): privileged calls wait for your approval on the host
+- [Tools](docs/reference.md): the 18 tools with examples
+- [Sudo approval](docs/sudo-approval.md): approve privileged calls on the host or with a phone authenticator
 - [Operations](docs/operations.md): deploy, rollback, troubleshooting, uninstall
 - [Releasing](docs/releasing.md): versions and release steps
 - [Reliability](docs/system-hardening.md): limits, logging, containment

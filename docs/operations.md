@@ -5,7 +5,37 @@ mode, drop `sudo`. Never uninstall through the bridge you're removing.
 
 ## Updates and rollback
 
-Bump the version first ([releasing](releasing.md)), then:
+Bump the version first ([releasing](releasing.md)), then run this in a host terminal:
+
+```bash
+bash install.sh --update
+```
+
+The updater shows numbered steps, the current test (`32/300`), pass/fail/error/skip
+counts, and a final summary. Quiet build steps print elapsed time every five seconds.
+Tests that fail print their tracebacks and the log location; that release is not activated.
+An existing authenticator is preserved without another code prompt. Otherwise the updater
+offers enrollment. Codes are visible as you type; the Linux sudo password stays hidden.
+
+Restart progress shows `deactivating`, `activating`, or `running` with elapsed time. Completion
+requires a new server process, the expected version, `/healthz`, and authenticated MCP
+`system_info` to succeed. It prints the running version and authenticator state, then explicitly
+says no more input is needed. A timeout or failed service is reported as failure, not success.
+An update from an older version can still take up to the old service's 90-second shutdown
+timeout; progress remains visible. New servers limit graceful request shutdown to 10 seconds.
+
+For setup or a restart without building another release:
+
+```bash
+bash install.sh --setup-authenticator
+bash install.sh --restart
+```
+
+Running `bash install.sh` without flags also updates an existing installation when used in a
+terminal. Without a terminal it retains staging-only behavior. MCP child processes cannot
+use the interactive update/setup/restart flow.
+
+For manual staging and activation:
 
 ```bash
 bash install.sh --stage                      # build + test a release; prints its path
@@ -15,13 +45,13 @@ curl --fail http://127.0.0.1:8765/healthz
 ```
 
 - **Stage** builds a separate app and venv under `~/.local/share/ai-bridge/releases/`,
-  runs the tests and records checksums. Only passing releases are marked `READY`.
+  runs counted tests and records checksums. Only passing releases are marked `READY`.
   No sudo, no restart.
 - **Activate** re-checks the checksums, points `current` at the release (old one becomes
   `previous`) and updates the systemd unit. Settings and credentials are untouched.
 - **Restarting from an MCP request?** Let the request return first:
   `sudo systemd-run --collect --on-active=3s /usr/bin/systemctl restart ai-bridge`
-- **Check from the client:** login works, 17 tools listed, a harmless call works, a wrong
+- **Check from the client:** login works, 18 tools listed, a harmless call works, a wrong
   token is refused. `/healthz` alone doesn't prove the client works.
 
 **Rollback:** `bash install.sh --rollback` (or pass a release path), then restart.

@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 
 TOKEN = 'integration-token-' * 3
+TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP'
 PASSWORD = 'fake-test-password-"\\-é'
 SID = '11111111-2222-4333-8444-555555555555'
 
@@ -27,6 +28,22 @@ from ai_bridge import server
 from ai_bridge import optional_agents
 assert 'ai_bridge.agents' not in sys.modules, 'Core startup eagerly loaded agent helpers'
 with ExitStack() as stack:
+    if sys.argv[1] == 'slow_shutdown':
+        import asyncio
+        normal = server.build_app()
+        async def app(scope, receive, send):
+            if scope.get('path') == '/hold':
+                await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+                await send({'type': 'http.response.body', 'body': b'waiting\\n', 'more_body': True})
+                await asyncio.sleep(60)
+                await send({'type': 'http.response.body', 'body': b'done'})
+            else:
+                await normal(scope, receive, send)
+        stack.enter_context(patch.object(server, 'build_app', return_value=app))
+    if sys.argv[1] == 'totp':
+        with server.APPROVALS._lock():
+            server.APPROVALS.remote.configure(server.CFG.sudo_totp_secret)
+        stack.enter_context(patch.object(server, 'run_sync', return_value=dict(exit_code=0, stdout='approved-fixture', stderr='', timed_out=False)))
     if sys.argv[1] == 'missing':
         stack.enter_context(patch.object(server.ag, 'find_binary', return_value=None))
     elif sys.argv[1] == 'backend_failed':
@@ -72,11 +89,13 @@ class CoreHTTPTests(unittest.TestCase):
                        AI_BRIDGE_ALLOWED_ORIGINS='https://extra.test',
                        AI_BRIDGE_DISABLED_AGENTS='cursor' if scenario == 'disabled' else '',
                        AI_BRIDGE_SUDO_PASSWORD_FILE=str(root/'sudo-test.pass'),
+                       AI_BRIDGE_SUDO_TOTP_SECRET=TOTP_SECRET if scenario == 'totp' else '',
                        AI_BRIDGE_CLAUDE_BIN=str(fake), AI_BRIDGE_CODEX_BIN=str(fake), AI_BRIDGE_CURSOR_BIN=str(fake),
                        CODEX_HOME=str(root/'codex'), CLAUDE_CONFIG_DIR=str(root/'claude'), AI_BRIDGE_CURSOR_HOME=str(root/'cursor'),
                        PYTHONPATH=str(Path(__file__).resolve().parents[1]))
             process = subprocess.Popen([sys.executable, '-c', BOOT, scenario], env=env,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.server_process = process
             base = f'http://127.0.0.1:{port}'
             try:
                 for _ in range(100):
@@ -126,9 +145,17 @@ class CoreHTTPTests(unittest.TestCase):
         self.assertIn('serverInfo', initialized)
         self.assertIn('Custom host instructions for test.', initialized['instructions'])
         self.assertIn('tell the user the task and target', initialized['instructions'])
+        self.assertIn('choices together in the FIRST approval prompt', initialized['instructions'])
+        self.assertIn('Do not also require a TOTP code', initialized['instructions'])
         tools = self.rpc(base, 'tools/list', {})['tools']
         self.assertIn('run_command', {tool['name'] for tool in tools})
-        self.assertEqual(len(tools), 17)
+        approval_tool = next(tool for tool in tools if tool['name'] == 'approve_privileged_request')
+        self.assertEqual(approval_tool['inputSchema']['properties']['code']['type'], 'string')
+        self.assertIn('Host CLI approval is an equal alternative', approval_tool['description'])
+        command_tool = next(tool for tool in tools if tool['name'] == 'run_command')
+        self.assertIn('administrator (root)', command_tool['description'])
+        self.assertIn('Client approval', command_tool['description'])
+        self.assertEqual(len(tools), 18)
         result = self.tool(base, 'run_command', {'command': 'printf core-ok'})
         self.assertEqual(result['stdout'], 'core-ok')
         self.assertIn('agents', self.tool(base, 'system_info', {}))
@@ -151,7 +178,7 @@ class CoreHTTPTests(unittest.TestCase):
         # Full core coverage runs once in test_core_http_without_any_coding_clis;
         # other scenarios only prove agent-side failures leave the core usable.
         tools = self.rpc(base, 'tools/list', {})['tools']
-        self.assertEqual(len(tools), 17)
+        self.assertEqual(len(tools), 18)
         self.assertEqual(self.tool(base, 'run_command', {'command': 'printf core-ok'})['stdout'], 'core-ok')
         self.assertIn('agents', self.tool(base, 'system_info', {}))
 
@@ -199,6 +226,33 @@ class CoreHTTPTests(unittest.TestCase):
             self.core_checks(root, base)
             self.assertTrue(all(not row['installed'] for row in self.tool(base, 'agent_list', {})['agents'].values()))
             self.assertIn('error', self.tool(base, 'agent_send', {'agent': 'codex', 'prompt': 'not run'}))
+
+    @unittest.skipIf(os.getuid() == 0, 'Root-service tools intentionally bypass approval')
+    def test_authenticator_approval_through_mcp_executes_once_and_hides_secret(self):
+        from ai_bridge.approvals import totp, totp_key
+        with self.running('totp') as (root, base):
+            args = {'command': 'fixture privileged command', 'cwd': str(root), 'sudo': True}
+            pending = self.tool(base, 'run_command', args)
+            self.assertEqual([m['method'] for m in pending['approval']['methods']], ['totp', 'host_cli'])
+            self.assertFalse(pending['execution_started'])
+            request_id = pending['approval']['request_id']
+            result = self.tool(base, 'approve_privileged_request',
+                               {'request_id': request_id, 'code': 'never-log-this-code'})
+            self.assertEqual(result['status'], 'invalid_or_expired_code')
+            code = totp(totp_key(TOTP_SECRET), int(time.time() // 30))
+            result = self.tool(base, 'approve_privileged_request', {'request_id': request_id, 'code': code})
+            self.assertEqual(result['status'], 'approved')
+            self.assertEqual(self.tool(base, 'run_command', args)['stdout'], 'approved-fixture')
+            self.assertEqual(self.tool(base, 'run_command', args)['status'], 'approval_required')
+            audit = (root / 'state/audit.log').read_text()
+            self.assertNotIn('never-log-this-code', audit)
+            self.assertNotIn(TOTP_SECRET, audit)
+            file = root / 'fake-secret.txt'
+            file.write_text(TOTP_SECRET)
+            rendered = json.dumps(self.rpc(base, 'tools/call', {'name': 'read_file', 'arguments': {'path': str(file)}}))
+            self.assertNotIn(TOTP_SECRET, rendered)
+            self.assertIn('[REDACTED]', rendered)
+            self.assertEqual(self.tool(base, 'system_info', {})['sudo_authenticator'], 'ready')
 
     def test_core_http_when_agent_helpers_fail_to_load(self):
         with self.running('backend_failed') as (root, base):
@@ -273,3 +327,12 @@ class CoreHTTPTests(unittest.TestCase):
             self.assertEqual(stopped['status'],'killed')
             for future in waits:future.result(timeout=5)
             self.assertLess(elapsed,1.5,'Wait requests exhausted workers needed for control operations')
+
+    def test_shutdown_does_not_wait_for_long_lived_connection_indefinitely(self):
+        with self.running('slow_shutdown') as (_, base):
+            with urllib.request.urlopen(base + '/hold', timeout=20) as response:
+                self.assertEqual(response.readline(), b'waiting\n')
+                started = time.monotonic()
+                self.server_process.terminate()
+                self.server_process.wait(timeout=15)
+                self.assertLess(time.monotonic() - started, 15)

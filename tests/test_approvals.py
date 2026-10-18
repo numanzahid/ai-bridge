@@ -46,7 +46,7 @@ class ApprovalStoreTests(unittest.TestCase):
     def test_missing_approval_blocks_and_repeats_return_the_same_request(self):
         first = self.store.gate('run_command', dict(CMD))
         self.assertEqual(first['status'], 'approval_required')
-        self.assertIn('Never approve', first['next'])
+        self.assertIn('Never self-authorize', first['next'])
         self.assertIn('approve ' + first['approval']['request_id'], first['approval']['approve_on_host'])
         self.assertEqual(self.request(), first['approval']['request_id'])
         self.assertEqual(len(self.store.all_requests()), 1)
@@ -319,7 +319,11 @@ class ServerGateTests(unittest.TestCase):
     def test_client_instructions_explain_the_flow(self):
         text = self.server.INSTRUCTIONS
         self.assertIn('approval_required', text)
-        self.assertIn('Never approve requests yourself', text)
+        self.assertIn('Never self-authorize', text)
+        self.assertIn('choices together in the FIRST approval prompt', text)
+        self.assertIn('Do not also require a TOTP code', text)
+        self.assertIn('They do not need to request sudo explicitly', text)
+        self.assertIn("Respect the client's approvals and safety policies", text)
 
 
 if __name__ == '__main__':

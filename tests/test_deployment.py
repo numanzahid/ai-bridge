@@ -111,7 +111,7 @@ class DeploymentTests(unittest.TestCase):
         shutil.copytree(self.source/'ai_bridge',source/'ai_bridge',ignore=shutil.ignore_patterns('__pycache__'))
         shutil.copytree(self.source/'tests',source/'tests',ignore=shutil.ignore_patterns('__pycache__'))
         for name in ('install.sh','bootstrap.py','uninstall.sh','uninstall.py','merge_env.py','requirements.txt',
-                     'requirements.lock','deploy.py','release.py'):
+                     'requirements.lock','deploy.py','installer.py','release.py'):
             shutil.copy2(self.source/name,source/name)
         init=source/'ai_bridge/__init__.py'
         init.write_text(re.sub(r'__version__ = "[^"]+"','__version__ = "'+version+'"',init.read_text()))

@@ -28,10 +28,13 @@ or paths. Test only systems you're authorized to test. No response time is promi
 
 ## Sudo approval
 
-Privileged calls (`sudo=true`, `remote_sudo=true`) wait until you approve them on the host with
-your sudo password; client "always allow" settings don't bypass this. It guards against an AI
-acting without you, not against a process that attacks the service account directly (Docker
-group, stored password). See [sudo approval](docs/sudo-approval.md).
+Privileged calls (`sudo=true`, `remote_sudo=true`) wait for a host decision or, after optional
+enrollment, a verified authenticator code. Client "always allow" settings don't bypass this.
+TOTP codes pass through the AI and can be redirected before first redemption. The TOTP secret
+and remote approval state are readable by the service user; commands can generate codes or
+tamper with that state. Redaction is not isolation. This guards ordinary use, not a process
+attacking the service account directly (Docker group, stored password, authenticator secret).
+See [sudo approval](docs/sudo-approval.md).
 
 ## Remote Control
 

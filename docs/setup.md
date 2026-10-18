@@ -18,11 +18,13 @@ The installer:
 - builds and tests a release under `~/.local/share/ai-bridge/releases/`
 - writes `/etc/ai-bridge/ai-bridge.env` (random token, mode 0640) and enables the service
 - offers to store a sudo password
-- starts the service after a short delay
+- in a terminal, offers authenticator setup and verifies service startup with progress
 
 If the port is busy, install still finishes but doesn't start the service. Set
 `AI_BRIDGE_PORT`, restart, and point your tunnel at it. On an existing install,
-`install.sh` only stages; see [operations](operations.md#updates-and-rollback).
+run `bash install.sh --update` for a complete update with progress. Without a terminal,
+the no-flag installer retains staging-only behavior; explicit `--stage` always only stages.
+See [operations](operations.md#updates-and-rollback).
 
 ## Root bootstrap choices
 
@@ -50,7 +52,7 @@ Keep `AI_BRIDGE_HOST=127.0.0.1`. Point an HTTPS tunnel or reverse proxy you cont
 | Token in path | `https://bridge.example.com/<TOKEN>/mcp` ("No authentication" in the client) |
 
 - Enter the token only in the host and connector settings, never in chat or commands.
-- `/healthz` only shows the server is up. Confirm the client lists 17 tools.
+- `/healthz` only shows the server is up. Confirm the client lists 18 tools.
 - Keep the client's action approvals on.
 - Name each connector after its host (for example "Workspace"). The bridge also sends its title
   (`AI Bridge (<hostname>)`), version, description, website and icon, but ChatGPT and Claude
@@ -67,6 +69,9 @@ the service through systemd `LoadCredential`.
 - **Root service:** sudo isn't used.
 
 After changing the password or unit, restart. Staging never updates it.
+
+To approve privileged calls from your phone, enroll an authenticator once from a host
+terminal. See [authenticator setup](sudo-approval.md#authenticator-setup).
 
 ## Configuration
 
@@ -88,7 +93,8 @@ Edit `/etc/ai-bridge/ai-bridge.env` with `sudoedit` (literal values, no shell sy
 | `AI_BRIDGE_CAPTURE_BYTES` / `AI_BRIDGE_JOB_LOG_BYTES` / `AI_BRIDGE_AUDIT_BYTES` | 256 KiB / 4 MiB / 2 MiB |
 | `AI_BRIDGE_RETENTION_DAYS` | `0` (keep jobs forever) |
 | `AI_BRIDGE_SUDO_PASSWORD_FILE` | Overrides the systemd credential |
-| `AI_BRIDGE_SUDO_APPROVAL` | `1`: privileged calls wait for approval on the host ([sudo approval](sudo-approval.md)). `0` turns it off |
+| `AI_BRIDGE_SUDO_APPROVAL` | `1`: privileged calls wait for verified approval ([sudo approval](sudo-approval.md)). `0` turns it off |
+| `AI_BRIDGE_SUDO_TOTP_SECRET` | Empty: host approval only. Set by the host authenticator enrollment CLI; never paste into chat |
 | `AI_BRIDGE_CLAUDE_BIN`, `_CODEX_BIN`, `_CURSOR_BIN` | Agent CLI paths |
 | `AI_BRIDGE_CLAUDE_EXTRA_ARGS`, `_CODEX_EXTRA_ARGS`, `_CURSOR_EXTRA_ARGS` | Extra CLI flags (check permission effects) |
 | `AI_BRIDGE_CURSOR_HOME` | Cursor CLI storage |

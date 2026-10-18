@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # AI Bridge installer. Run from the project folder:
 #   bash install.sh
-# Existing installations stage a tested release only. Activation/restart is explicit.
-# --stage | --activate RELEASE | --rollback [RELEASE]
+# In a terminal, existing installations update with progress. --stage is unattended staging only.
+# --update | --setup-authenticator | --restart | --stage | --activate RELEASE | --rollback [RELEASE]
 set -euo pipefail
 
 APP_USER="$(id -un)"
@@ -29,6 +29,27 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 # Staging needs no sudo and never changes the active application or service.
+case "${1:-}" in
+  --help|-h)
+    cat <<'HELP'
+Usage: bash install.sh [OPTION]
+
+  (no option)             Install; in a terminal, update an existing installation
+  --update                Build, test, activate, restart and verify with progress
+  --setup-authenticator   Set up phone codes, restart and verify
+  --restart               Restart with service progress and a health check
+  --stage                 Only build and test; no service changes
+  --activate RELEASE      Select a staged release; no restart
+  --rollback [RELEASE]    Select an older release; no restart
+  --uninstall             Removal options (see docs/operations.md)
+HELP
+    exit 0
+    ;;
+  --update|--setup-authenticator|--restart)
+    [ "$#" -eq 1 ] || die "Unexpected arguments."
+    exec python3 -u "$SRC_DIR/installer.py" "${1#--}"
+    ;;
+esac
 if [ "${1:-}" = "--stage" ]; then
   exec python3 "$SRC_DIR/deploy.py" stage --root "$DATA_DIR" --source "$SRC_DIR"
 fi
@@ -44,6 +65,7 @@ if [ "${1:-}" = "--activate" ] || [ "${1:-}" = "--rollback" ]; then
     SELECTED="$(python3 "$SRC_DIR/deploy.py" "$ACTION" --root "$DATA_DIR")"
   fi
   # Preserve the old unit for first-migration rollback. No config/credential edits.
+  say "Updating the service definition (your Linux password may be requested)"
   sudo python3 - "$UNIT_FILE" "$SELECTED" <<'UNITPY'
 import os,sys,tempfile
 from pathlib import Path
@@ -86,6 +108,9 @@ if [ "$MODE" = --dedicated-user ]; then
   exec python3 "$SRC_DIR/bootstrap.py" --source "$SRC_DIR" --dedicated-user "${2:-ai-bridge}"
 fi
 if [ -d "$DATA_DIR/app" ] || [ -L "$DATA_DIR/current" ]; then
+  if [ -t 0 ] && [ -t 1 ] && [ -z "${AI_BRIDGE_CHILD:-}" ]; then
+    exec python3 -u "$SRC_DIR/installer.py" update
+  fi
   say "Existing installation: staging only. Its active listener is left running." >&2
   RELEASE="$(python3 "$SRC_DIR/deploy.py" stage --root "$DATA_DIR" --source "$SRC_DIR")"
   echo "Staged and tested: $RELEASE"
@@ -170,6 +195,9 @@ AI_BRIDGE_CAPTURE_BYTES=262144
 AI_BRIDGE_JOB_LOG_BYTES=4194304
 AI_BRIDGE_RETENTION_DAYS=0
 AI_BRIDGE_AUDIT_BYTES=2097152
+# Privileged calls require host approval; enroll phone codes with approvals.py totp-setup
+AI_BRIDGE_SUDO_APPROVAL=1
+AI_BRIDGE_SUDO_TOTP_SECRET=
 # Optional host configuration root (default: ~/.config/ai-bridge)
 # AI_BRIDGE_CONFIG_DIR=/path/to/ai-bridge-config
 # Optional skill discovery roots, separated by colons (defaults: ~/.codex/skills,
@@ -298,8 +326,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable ai-bridge >/dev/null
 # Never restart synchronously from an MCP call served by this unit.
 if [ "$PORT_STATE" = available ]; then
-  sudo systemd-run --collect --on-active=3s --unit="ai-bridge-install-$(date +%s)" /usr/bin/systemctl restart ai-bridge
-  say "Installation complete. Service startup scheduled; verify health after startup."
+  if [ -t 0 ] && [ -t 1 ] && [ -z "${AI_BRIDGE_CHILD:-}" ]; then
+    python3 -u "$SRC_DIR/installer.py" finish-install
+  else
+    sudo systemd-run --collect --on-active=3s --unit="ai-bridge-install-$(date +%s)" /usr/bin/systemctl restart ai-bridge
+    say "Installation complete. Service startup scheduled; verify health after startup."
+  fi
 else
   say "Installation complete. Startup pending: 127.0.0.1:$PORT is unavailable." >&2
   cat >&2 <<PORT_HELP

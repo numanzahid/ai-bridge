@@ -45,10 +45,12 @@ from .approvals import Approvals
 from .privilege import CLIENT_INSTRUCTIONS, fields as privilege_fields, initial as privilege_initial, job_fields
 
 CFG = Config.load()
-REDACT = Redactor([CFG.token] + ([CFG.sudo_password] if CFG.sudo_password else []))
+REDACT = Redactor([CFG.token, CFG.sudo_totp_secret, CFG.sudo_totp_secret.upper()] +
+                  ([CFG.sudo_password] if CFG.sudo_password else []))
 JOBS = Jobs(CFG)
 APPROVALS = Approvals(CFG.state_dir, CFG.approval_dir,
-                      log=lambda event, **fields: audit(CFG, REDACT, event, {}, phase='approval', **fields))
+                      log=lambda event, **fields: audit(CFG, REDACT, event, {}, phase='approval', **fields),
+                      totp_secret=CFG.sudo_totp_secret)
 AGENT_START_LOCK = threading.Lock()
 WAIT_SLOTS = threading.BoundedSemaphore(8)
 
@@ -125,7 +127,7 @@ def _out(tool: str, args: dict, payload: dict | str) -> str:
 
 
 def _approval(tool: str, args: dict, requested: bool) -> dict | None:
-    """The response that replaces a privileged call until the user approves it on the host.
+    """The response that replaces a privileged call until verified TOTP or host approval.
 
     A root service is already root, so there is nothing for an approval to guard.
     Errors fail closed: the call does not run.
@@ -137,6 +139,26 @@ def _approval(tool: str, args: dict, requested: bool) -> dict | None:
     except OSError as error:
         return {'status': 'approval_unavailable', 'automatic_retry': False,
                 'error': f'Approval storage is unavailable, so the privileged call did not run: {error}'}
+
+
+@bridge_tool(annotations=MANAGE)
+def approve_privileged_request(request_id: str, code: str) -> str:
+    """Verify a user-supplied authenticator code for one pending administrator operation.
+
+    Use after approval_required when the user chooses the authenticator option by
+    sending a current code for the displayed host, operation and request_id. Keep
+    all six digits as a string. Never generate, guess or echo codes. This records
+    authorization only; it executes no command. After status approved, repeat the
+    exact original tool call. Host CLI approval is an equal alternative: if the user
+    says they approved there, repeat the original call directly without this tool
+    or another code. This verifier grants once only, not a task window.
+    """
+    if not CFG.sudo_approval or os.geteuid() == 0:
+        payload = {'status': 'approval_not_required', 'automatic_retry': False}
+    else:
+        payload = APPROVALS.approve_remote(request_id, code)
+    # Codes must never enter audit arguments, tool results, or error messages.
+    return _out('approve_privileged_request', {}, payload)
 
 
 def _fmt_time(ts: float | None) -> str | None:
@@ -242,6 +264,9 @@ def ssh_run(host: str, command: str, timeout: int = 120, remote_sudo: bool = Fal
 
     remote_sudo uses remote sudo -n only, never bridge/local sudo or forwarded passwords.
     Announce remote task/target and report confirmation separately from command outcome.
+    Set remote_sudo=true when the authorized task needs remote administrator access.
+    approval_required means nothing ran: offer the returned authenticator and host CLI
+    methods together. After either is verified, repeat this exact call; either suffices.
     """
     args = {'host': host, 'timeout': timeout, 'remote_sudo': remote_sudo}
     blocked = _approval('ssh_run', {'host': host, 'command': command}, remote_sudo)
@@ -286,7 +311,9 @@ def system_info() -> str:
         "sudo_verified": False,
         "sudo_note": 'Configuration only; no elevation probe was run.',
         "sudo_approval": ('not applicable: service runs as root' if os.geteuid() == 0 else
+                          'required: host approval or authenticator code' if CFG.sudo_approval and CFG.sudo_totp_secret else
                           'required: the user approves each privileged call on the host' if CFG.sudo_approval else 'off'),
+        "sudo_authenticator": (APPROVALS.remote_status() if CFG.sudo_approval and os.geteuid() != 0 else 'not applicable'),
         "limits": {'capture_bytes': CFG.capture_bytes, 'job_log_bytes': CFG.job_log_bytes,
                    'retention_days': CFG.retention_days, 'response_chars': CFG.max_output_chars},
         "service_euid": os.geteuid(),
@@ -314,13 +341,22 @@ def system_info() -> str:
 
 @bridge_tool(annotations=RW)
 def run_command(command: str, cwd: str | None = None, timeout: int = 120, sudo: bool = False) -> str:
-    """Run a bash command and return stdout, stderr and exit code.
+    """Run an authorized administration or diagnostic command on this connected Linux host.
+
+    Returns stdout, stderr and exit code. Use for the user's requested maintenance,
+    service checks or configuration tasks. Ordinary calls run as the service user.
 
     command: bash command line (runs as a login shell, no TTY).
     cwd: working directory (default: the configured default dir).
     timeout: seconds, 1-600. Use start_job for longer work.
-    sudo: run as root. Needs the user's approval on the host first (status approval_required);
-      after they approve, repeat the exact call. Never include a password yourself.
+    sudo: request administrator (root) execution when the authorized task needs it;
+      the user need not name sudo. Use this parameter, not sudo inside command.
+      The server returns approval_required BEFORE execution. Present every returned
+      approval method in the first prompt: a user-supplied authenticator code OR
+      approval through the host CLI. Either is sufficient. After verified code
+      approval or confirmed CLI approval, repeat this exact call; the server checks
+      authorization before launch. Never supply a Linux password. Client approval
+      controls still apply. Inspect privilege metadata and exit code before claiming success.
     """
     args = {"command": command, "cwd": cwd, "timeout": timeout, "sudo": sudo}
     timeout = max(1, min(int(timeout), 600))
@@ -343,6 +379,9 @@ def start_job(command: str, cwd: str | None = None, sudo: bool = False) -> str:
     """Start a long-running bash command in the background. Returns a job_id.
 
     Watch it with job_status. Jobs keep running if this chat ends or the server restarts.
+    For an authorized task needing root, set sudo=true instead of embedding sudo in
+    command. approval_required means no job started: offer the returned TOTP and host
+    CLI methods together. After either is verified, repeat this exact call once.
     """
     args = {"command": command, "cwd": cwd, "sudo": sudo}
     try:
@@ -447,6 +486,9 @@ def read_file(path: str, start_line: int = 1, max_lines: int = 400, sudo: bool =
 
     include_hash optionally scans the entire file for a SHA256 to use with an atomic write.
     Large files report that only a prefix was captured; use shell tools for arbitrary ranges.
+    For an authorized read requiring administrator access, set sudo=true. On
+    approval_required, present both returned methods (authenticator code or host CLI).
+    After either is verified, repeat the exact call; do not ask for both approvals.
     """
     args = {'path': path, 'start_line': start_line, 'max_lines': max_lines, 'sudo': sudo}
     blocked = _approval('read_file', {'path': os.path.expanduser(path)}, sudo)
@@ -471,6 +513,10 @@ def write_file(path: str, content: str, append: bool = False, sudo: bool = False
     backup creates a private local copy, and mode sets integer permission bits (384 is 0600).
     Atomic writes reject symlinks, hard links, ACLs/xattrs and special files. Hash checking is
     optimistic, not a lock against unrelated editors. append cannot be combined with atomic.
+    For an authorized write requiring administrator access, set sudo=true. On
+    approval_required, present both returned methods (authenticator code or host CLI).
+    Either authorizes the bound path, content and options; repeat the exact call after
+    verified approval. Changing content or options requires a new approval request.
     """
     args = {'path': path, 'append': append, 'sudo': sudo, 'bytes': len(content.encode()), 'atomic': atomic}
     blocked = _approval('write_file', {'path': os.path.expanduser(path), 'content': content, 'append': append,
@@ -884,7 +930,10 @@ def main():
     print(f"ai-bridge listening on http://{CFG.host}:{CFG.port}  (MCP path: /<token>/mcp)", flush=True)
     print(f"sudo: {'password configured' if CFG.sudo_password else 'no password (NOPASSWD or none)'}", flush=True)
     # access_log=False: the URL contains the token, keep it out of logs.
-    uvicorn.run(app, host=CFG.host, port=CFG.port, log_level="warning", access_log=False, proxy_headers=True)
+    # Long-lived MCP connections must not hold a restart until systemd's 90s kill timeout.
+    # Detached command/agent jobs have their own runners and survive this server shutdown.
+    uvicorn.run(app, host=CFG.host, port=CFG.port, log_level="warning", access_log=False,
+                proxy_headers=True, timeout_graceful_shutdown=10)
 
 
 if __name__ == "__main__":

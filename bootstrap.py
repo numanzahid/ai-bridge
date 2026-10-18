@@ -35,7 +35,8 @@ def installation_matches(home, user, etc=Path('/etc/ai-bridge'), unit=Path('/etc
 def copy_source(source, parent, account):
     # Copy only public source inputs; never copy credentials, native history, or VCS state.
     allowed = ('ai_bridge', 'tests', 'docs', 'requirements.txt', 'requirements.lock',
-               'install.sh', 'bootstrap.py', 'uninstall.sh', 'uninstall.py', 'deploy.py', 'merge_env.py', 'README.md', 'SECURITY.md', 'LICENSE')
+               'install.sh', 'installer.py', 'bootstrap.py', 'uninstall.sh', 'uninstall.py', 'deploy.py',
+               'release.py', 'CHANGELOG.md', 'merge_env.py', 'README.md', 'SECURITY.md', 'LICENSE')
     if any(path.is_symlink() for path in (parent, *parent.parents)):
         raise ValueError('Symlinked bootstrap copy parent is not supported.')
     parent.mkdir(mode=0o755, parents=True, exist_ok=True)

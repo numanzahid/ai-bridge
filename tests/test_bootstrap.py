@@ -76,6 +76,8 @@ class BootstrapTests(unittest.TestCase):
         source, parent = self.root/'source', self.root/'copies'
         source.mkdir(); parent.mkdir(mode=0o700)
         (source/'install.sh').write_text('source')
+        for name in ('installer.py', 'release.py', 'CHANGELOG.md'):
+            (source/name).write_text('installer input: ' + name)
         (source/'.env').write_text('not copied')
         (source/'.git').mkdir()
         with patch('os.chown') as chown:
@@ -88,6 +90,8 @@ class BootstrapTests(unittest.TestCase):
                 result = bootstrap.copy_source(source, parent, self.account)
         self.assertEqual(parent.stat().st_mode & 0o777, 0o755)
         self.assertEqual((result/'install.sh').read_text(), 'source')
+        for name in ('installer.py', 'release.py', 'CHANGELOG.md'):
+            self.assertEqual((result/name).read_text(), 'installer input: ' + name)
         self.assertFalse((result/'.env').exists())
         self.assertFalse((result/'.git').exists())
         self.assertTrue(all(result == call.args[0] or result in call.args[0].parents for call in chown.call_args_list))

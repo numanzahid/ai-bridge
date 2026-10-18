@@ -1,6 +1,6 @@
 # Tool reference
 
-The bridge exposes 17 MCP tools. The system tools are the core; coding agents are an
+The bridge exposes 18 MCP tools. The system tools are the core; coding agents are an
 optional add-on that reuses them (agent turns are jobs). `tools/list` has exact
 parameters. Every tool runs as the service user; one token can call all of them.
 
@@ -9,6 +9,7 @@ parameters. Every tool runs as the service user; one token can call all of them.
 | Tool | Purpose | Example request |
 |---|---|---|
 | `system_info` | Host facts: OS, disk, memory, sudo setup, agents, bridge version | "What's this machine and what's installed?" |
+| `approve_privileged_request` | Verify a user-supplied authenticator code for one pending request; executes nothing | "Approve request ABCDEF0123 with my authenticator code" |
 | `run_command` | Run a bash command (timeout 1–600 s, default 120) | "Show the 10 largest dirs in /var" |
 | `start_job` | Start a long command in the background; returns `job_id` | "Run the full backup in the background" |
 | `job_status` | Status + output of any job, including agent turns; `wait_seconds` waits, `log_offset` pages the full log | "Is the backup done? Show its log" |
@@ -17,8 +18,11 @@ parameters. Every tool runs as the service user; one token can call all of them.
 | `read_file` | Read a text file with line numbers (`sudo` for root files) | "Show /etc/nginx/nginx.conf" |
 | `write_file` | Write or append a file; optional atomic write, backup, hash check | "Set `max_connections=200` in app.conf" |
 
-- `sudo=true` waits for your approval on the host: the call returns `status: approval_required`
-  with a `request_id`; after you approve, the AI repeats the exact call. See [sudo approval](sudo-approval.md).
+- `sudo=true` waits for verified approval: the call returns `status: approval_required`
+  with a `request_id`; its first prompt should offer a current authenticator code in chat or
+  the host CLI command together, when both are available. Either method suffices; after CLI
+  approval, tell the assistant it is approved without also providing a code.
+  After verified approval, the AI repeats the exact call. See [sudo approval](sudo-approval.md).
 - Long work: `start_job`, then poll `job_status`. Jobs survive chat end and restarts.
 - Output is bounded. Long logs keep the head and tail; page with `job_status(log_offset=0)`.
 - Job status: `running`, `done`, `failed`, `killed`, `lost`, `cleanup_incomplete`.
@@ -34,7 +38,7 @@ parameters. Every tool runs as the service user; one token can call all of them.
 
 - Only named aliases from your SSH config; host keys must already be trusted.
 - Executable or conditional config (`ProxyCommand`, `Match`) is refused.
-- `remote_sudo=true` needs approval on this host first, like local `sudo=true`.
+- `remote_sudo=true` needs verified approval through either available method, like local `sudo=true`.
 - `committed=null` means the result is unknown: check before retrying.
 - Prepare hosts as in [setup](setup.md#remote-ssh-preparation).
 
