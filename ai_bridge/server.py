@@ -42,7 +42,8 @@ from .core import (
 )
 
 from .approvals import Approvals
-from .privilege import CLIENT_INSTRUCTIONS, fields as privilege_fields, initial as privilege_initial, job_fields
+from .privilege import (CLIENT_INSTRUCTIONS, HOST_TARGET_INSTRUCTIONS,
+                        fields as privilege_fields, initial as privilege_initial, job_fields)
 
 CFG = Config.load()
 REDACT = Redactor([CFG.token, CFG.sudo_totp_secret, CFG.sudo_totp_secret.upper()] +
@@ -55,7 +56,7 @@ AGENT_START_LOCK = threading.Lock()
 WAIT_SLOTS = threading.BoundedSemaphore(8)
 
 HOST_CONFIG = HostConfig()
-INSTRUCTIONS = REDACT(HOST_CONFIG.instructions + "\n" + CLIENT_INSTRUCTIONS)
+INSTRUCTIONS = REDACT(HOST_TARGET_INSTRUCTIONS + "\n" + HOST_CONFIG.instructions + "\n" + CLIENT_INSTRUCTIONS)
 
 def _icons():
     """Bundled icons as data URIs, so clients need no public, token-free URL to show them."""
@@ -220,9 +221,10 @@ def _catalog_page(tool: str, roots: list[Path], key: str, limit: int, offset: in
 
 @bridge_tool(annotations=RO)
 def list_instructions(kind: Literal['instructions', 'skills'] = 'instructions', limit: int = 30, offset: int = 0) -> str:
-    """Discover guidance on this machine: names, short descriptions and paths. Read chosen files with read_file.
+    """Discover guidance on the AI Bridge host: names, descriptions and paths.
 
-    kind=instructions (call first when working here): user docs in ~/.config/ai-bridge/instructions/.
+    Read chosen host files with read_file.
+    kind=instructions: user docs in ~/.config/ai-bridge/instructions/.
     kind=skills: local SKILL.md files (Codex, Claude, Cursor, .agents or AI_BRIDGE_SKILL_DIRS).
     Discovery never installs or runs skills. Follow next_offset for more entries.
     """
@@ -293,7 +295,10 @@ def ssh_transfer(host: str, direction: Literal['upload', 'download'], local_path
 
 @bridge_tool(annotations=RO)
 def system_info() -> str:
-    """Basic facts about this machine: OS, user, uptime, disk, memory, sudo setup, installed agent CLIs."""
+    """Facts about the AI Bridge host: OS, user, disk, memory, sudo setup and agent CLIs.
+
+    This describes the bridge host, not a cloud client's shell or sandbox.
+    """
     prefix = Path(sys.prefix)
     info = {
         "bridge_version": __version__,
@@ -341,7 +346,7 @@ def system_info() -> str:
 
 @bridge_tool(annotations=RW)
 def run_command(command: str, cwd: str | None = None, timeout: int = 120, sudo: bool = False) -> str:
-    """Run an authorized administration or diagnostic command on this connected Linux host.
+    """Run a remote administration or diagnostic command on the AI Bridge host.
 
     Returns stdout, stderr and exit code. Use for the user's requested maintenance,
     service checks or configuration tasks. Ordinary calls run as the service user.
@@ -378,6 +383,7 @@ def run_command(command: str, cwd: str | None = None, timeout: int = 120, sudo: 
 def start_job(command: str, cwd: str | None = None, sudo: bool = False) -> str:
     """Start a long-running bash command in the background. Returns a job_id.
 
+    Commands execute on the bridge host.
     Watch it with job_status. Jobs keep running if this chat ends or the server restarts.
     For an authorized task needing root, set sudo=true instead of embedding sudo in
     command. approval_required means no job started: offer the returned TOTP and host
@@ -482,7 +488,9 @@ def _file_operation(request: dict, sudo: bool):
 @bridge_tool(annotations=RO)
 def read_file(path: str, start_line: int = 1, max_lines: int = 400, sudo: bool = False,
               include_hash: bool = False) -> str:
-    """Read a regular text file with line numbers and bounded bytes. sudo=true for root files.
+    """Read a regular text file on the AI Bridge host, with line numbers and bounded bytes.
+
+    sudo=true requests approved root access for protected files on that host.
 
     include_hash optionally scans the entire file for a SHA256 to use with an atomic write.
     Large files report that only a prefix was captured; use shell tools for arbitrary ranges.
@@ -507,7 +515,9 @@ def read_file(path: str, start_line: int = 1, max_lines: int = 400, sudo: bool =
 def write_file(path: str, content: str, append: bool = False, sudo: bool = False,
                make_dirs: bool = True, atomic: bool = False, expected_sha256: str | None = None,
                backup: bool = False, mode: int | None = None) -> str:
-    """Write text, preserving existing direct-write behavior by default. sudo=true for root files.
+    """Write text on the AI Bridge host, preserving direct-write behavior by default.
+
+    sudo=true requests approved root access for protected files on that host.
 
     atomic=true replaces supported regular files; optional expected_sha256 detects stale content,
     backup creates a private local copy, and mode sets integer permission bits (384 is 0600).
@@ -611,7 +621,10 @@ def agent_send(
     remote: bool = False,
     name: str | None = None,
 ) -> str:
-    """Send a prompt to a local coding agent and start a turn. Returns job_id (and the result if it finishes fast).
+    """Send a prompt to a coding agent on the AI Bridge host and start a turn.
+
+    Use for user-requested delegation or another bridge-managed agent session.
+    Returns job_id (and the result if it finishes fast).
 
     agent: claude (Claude Code), codex (OpenAI Codex CLI), cursor (Cursor CLI).
     prompt: what the agent should do.

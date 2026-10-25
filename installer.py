@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 
 import deploy
+from ai_bridge.local_instructions import install as install_local_instructions
 
 
 def say(message):
@@ -155,6 +156,12 @@ class Installer:
             say('    Authenticator needs attention. Run: bash install.sh --setup-authenticator')
         say('    Reconnect your MCP client. You can close this terminal; no more input is needed.')
 
+    def local_agent_instructions(self):
+        say('    Updating local Codex and Claude Code tool preferences (web MCP guidance stays separate).')
+        for result in install_local_instructions():
+            say(f'    {result["status"]}: {result["path"]}')
+        say('    Start new local agent sessions to load these preferences.')
+
     def update(self):
         self.step(1, 5, 'Checking installation and privileges')
         self.authenticate()
@@ -165,6 +172,7 @@ class Installer:
         release = deploy.stage(self.root, self.source)
         self.step(3, 5, 'Activating the tested release')
         run_command(['bash', str(self.source / 'install.sh'), '--activate', str(release)], 'Activating release')
+        self.local_agent_instructions()
         self.step(4, 5, 'Checking authenticator setup')
         self.enroll(offer=True)
         self.step(5, 5, 'Restarting and verifying the service')
@@ -186,6 +194,7 @@ class Installer:
         self.complete(self.restart())
 
     def finish_install(self):
+        self.local_agent_instructions()
         self.step(1, 2, 'Checking authenticator setup')
         if os.geteuid() == 0:
             say('    Root service: privileged approval does not apply.')

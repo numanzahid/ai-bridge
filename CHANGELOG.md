@@ -5,6 +5,16 @@ see [releasing](docs/releasing.md) for when to bump which part.
 
 ## [Unreleased]
 
+## [3.2.3] - 2026-10-26
+
+### Fixed
+- Install native-tool preferences in local Codex and Claude Code instruction files, preserving
+  existing guidance with private backups and idempotent managed sections. Honor custom agent
+  configuration directories and active global Codex overrides.
+- Keep those preferences out of shared MCP instructions and tool descriptions so chatgpt.com
+  and claude.ai continue using the bridge for host access. Clarify the execution target and
+  distinguish cloud sandboxes from the host even when accounts are shared.
+
 ## [3.2.2] - 2026-10-19
 
 ### Fixed

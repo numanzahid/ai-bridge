@@ -14,8 +14,9 @@ The installer creates missing defaults and never overwrites your edits.
 | `prompts.json` | MCP prompt list | Restart + refresh |
 | Resource / prompt files | Their content | Immediately |
 
-- Keep `server-instructions.md` short. The server always appends privilege-disclosure
-  guidance, even if your file is empty.
+- Keep `server-instructions.md` short. The server always prepends execution-target guidance
+  and appends privilege-disclosure guidance, even if your file is empty. Local Codex and
+  Claude Code tool preferences belong in their own instruction files, not shared MCP notes.
 - A tool description file replaces the whole description; name it after the exact tool.
   Unknown names or empty files stop startup.
 

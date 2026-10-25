@@ -1,6 +1,14 @@
 """Privilege disclosure; a request is never evidence of successful escalation."""
 import os
 
+HOST_TARGET_INSTRUCTIONS = """Execution target:
+These tools operate on the configured AI Bridge host, as identified in the host notes below.
+Use them for user-authorized work on that host from chatgpt.com, claude.ai, or other clients.
+A cloud client's shell or sandbox is separate from the bridge host. Sharing an account does
+not make those environments the same machine. Local coding-agent tool preferences live in
+that agent's local instruction files; they do not disable bridge access for web clients.
+"""
+
 CLIENT_INSTRUCTIONS = """Authorized host administration:
 Use these tools for system administration tasks the user authorizes on the connected host.
 The user can describe their goal in ordinary language, such as checking a protected service

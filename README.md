@@ -26,6 +26,11 @@ curl --fail http://127.0.0.1:8765/healthz
 
 Then set up HTTPS and your client: [setup](docs/setup.md).
 
+The interactive installer adds local tool preferences to Codex's `AGENTS.md` and Claude Code's
+`CLAUDE.md`: ordinary work on the same machine uses native tools. The preference stays out of
+shared MCP guidance; chatgpt.com and claude.ai still use the bridge to reach this host.
+See [local agent instructions](docs/instructions-guide.md).
+
 - **Normal user:** installs as that user; sudo is used when needed.
 - **Root:** offers a dedicated `ai-bridge` account (recommended) or direct root (high risk).
   Unattended root install needs `--run-as-root`.

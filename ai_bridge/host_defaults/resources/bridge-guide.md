@@ -3,8 +3,8 @@
 AI Bridge defaults to `~/.config/ai-bridge/`. `AI_BRIDGE_CONFIG_DIR` overrides it;
 otherwise `XDG_CONFIG_HOME` is honored.
 
-- `server-instructions.md`: connection guidance, supplemented by mandatory
-  privilege-disclosure instructions even if the file is empty.
+- `server-instructions.md`: connection guidance, preceded by mandatory execution-target
+  instructions and followed by privilege-disclosure instructions even if the file is empty.
 - `tool-descriptions/<tool_name>.md`: an existing tool's description, not its schema.
 - `instructions/`: optional workspace documents discovered by `list_instructions`.
 - `resources.json`: named UTF-8 files for `resources/list` and `resources/read`.

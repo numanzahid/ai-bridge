@@ -33,12 +33,14 @@ class InstallerTests(unittest.TestCase):
         with patch.object(self.flow, 'authenticate'), patch.object(deploy.versioning, 'check', return_value='3.2.1'), \
                 patch.object(deploy, 'stage', return_value=self.release), patch.object(installer, 'run_command') as command, \
                 patch.object(self.flow, 'enroll') as enroll, \
+                patch.object(self.flow, 'local_agent_instructions') as local_instructions, \
                 patch.object(self.flow, 'restart', return_value={'bridge_version': '3.2.1', 'sudo_authenticator': 'ready'}), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
             self.flow.update()
         command.assert_called_once_with(['bash', str(self.flow.source / 'install.sh'), '--activate', str(self.release)],
                                         'Activating release')
         enroll.assert_called_once_with(offer=True)
+        local_instructions.assert_called_once_with()
         for step in range(1, 6):
             self.assertIn(f'[{step}/5]', output.getvalue())
         self.assertIn('COMPLETE', output.getvalue())
